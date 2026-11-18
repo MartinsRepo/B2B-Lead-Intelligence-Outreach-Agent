@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 from typing import Any
 
 try:
@@ -31,10 +32,10 @@ from lead_agent.schemas import LeadReport
 
 ORCHESTRATOR_INSTRUCTIONS = """You are the Lead Orchestrator Agent controlling an autonomous B2B Lead Intelligence & Outreach workflow.
 
-Your workflow MUST follow these exact steps:
-1. Invoke `company_news_research_tool` with the target domain or LinkedIn URL to gather company overview, recent press releases/news, and source links.
-2. Invoke `tech_stack_detection_tool` with the target domain or URL to detect their web/cloud stack and engineering hiring signals from job postings.
-3. Pass the combined intelligence to `outreach_copywriter_tool` to generate the 'Before' (generic AI) vs. 'After' (hyper-personalized) outreach pitch and LinkedIn hook.
+Your workflow MUST follow these steps using your available sub-agent tools:
+1. If `company_news_research_tool` is available, invoke it with the target domain or corporate URL to gather company overview, recent press releases/news, and source links.
+2. If `tech_stack_detection_tool` is available, invoke it with the target domain or URL to detect their web/cloud stack and engineering hiring signals from job postings.
+3. If `outreach_copywriter_tool` is available, pass the combined intelligence to it to generate the 'Before' (generic AI baseline) vs. 'After' (hyper-personalized) outreach pitch and short-form icebreaker hook.
 4. Synthesize all findings into the final `LeadReport` structured schema, ensuring every claim is backed by verified HTTP/HTTPS URLs in `sources`."""
 
 
@@ -99,63 +100,104 @@ class TelemetryAgentHooks(AgentHooks[LeadRunContext]):  # type: ignore[misc]
             )
 
 
+LIVE_MODEL_ALIASES: dict[str, str] = {
+    "gpt-6-luna": "gpt-4o-mini",
+    "gpt-6.2-sol": "gpt-4o",
+}
+
+
+def resolve_live_model_name(configured_model: str) -> str:
+    """Map conceptual architecture model IDs to live OpenAI API model IDs when needed."""
+    return LIVE_MODEL_ALIASES.get(configured_model.strip().lower(), configured_model)
+
+
 def create_lead_orchestrator(
     settings: AgentSettings = DEFAULT_SETTINGS,
+    resolve_aliases: bool = False,
 ) -> Agent[LeadRunContext]:
     """Assemble the multi-agent hierarchy using the OpenAI Agents SDK .as_tool() pattern."""
-    company_agent = create_company_news_agent(
-        settings=settings,
-        hooks=TelemetryAgentHooks(
-            role_label="Scraping & News Extraction", model_name=settings.fast_model
-        ),
-    )
-    tech_agent = create_tech_stack_agent(
-        settings=settings,
-        hooks=TelemetryAgentHooks(
-            role_label="Tech-Stack & Job-Board Parsing", model_name=settings.fast_model
-        ),
-    )
-    copywriter_agent = create_copywriter_agent(
-        settings=settings,
-        hooks=TelemetryAgentHooks(
-            role_label="Executive Pitch Synthesis", model_name=settings.reasoning_model
-        ),
+    effective_settings = (
+        replace(
+            settings,
+            fast_model=resolve_live_model_name(settings.fast_model),
+            reasoning_model=resolve_live_model_name(settings.reasoning_model),
+        )
+        if resolve_aliases
+        else settings
     )
 
-    orchestrator_hooks = TelemetryAgentHooks(
-        role_label="Workflow Orchestration & Structuring",
-        model_name=settings.reasoning_model,
-    )
+    subagent_tools: list[Any] = []
 
-    return Agent[LeadRunContext](
-        name="Lead Orchestrator",
-        model=settings.reasoning_model,
-        instructions=ORCHESTRATOR_INSTRUCTIONS,
-        tools=[
+    if settings.enable_company_news_agent:
+        company_agent = create_company_news_agent(
+            settings=effective_settings,
+            hooks=TelemetryAgentHooks(
+                role_label="Scraping & News Extraction", model_name=settings.fast_model
+            ),
+        )
+        subagent_tools.append(
             company_agent.as_tool(
                 tool_name="company_news_research_tool",
                 tool_description=(
                     "Scrapes the target company's website, press releases, and recent news "
                     "using the fast extraction model."
                 ),
+            )
+        )
+
+    if settings.enable_tech_stack_agent:
+        tech_agent = create_tech_stack_agent(
+            settings=effective_settings,
+            hooks=TelemetryAgentHooks(
+                role_label="Tech-Stack & Job-Board Parsing", model_name=settings.fast_model
             ),
+        )
+        subagent_tools.append(
             tech_agent.as_tool(
                 tool_name="tech_stack_detection_tool",
                 tool_description=(
                     "Detects the target company's frontend/cloud tech stack and scans job "
                     "postings for engineering hiring signals using the fast extraction model."
                 ),
+            )
+        )
+
+    if settings.enable_copywriter_agent:
+        copywriter_agent = create_copywriter_agent(
+            settings=effective_settings,
+            hooks=TelemetryAgentHooks(
+                role_label="Executive Pitch Synthesis", model_name=settings.reasoning_model
             ),
+        )
+        subagent_tools.append(
             copywriter_agent.as_tool(
                 tool_name="outreach_copywriter_tool",
                 tool_description=(
                     "Synthesizes company news and tech stack signals into a Before/After "
                     "B2B outreach pitch using the reasoning model."
                 ),
-            ),
-        ],
-        input_guardrails=[validate_lead_input_guardrail],
-        output_guardrails=[validate_lead_output_guardrail],
+            )
+        )
+
+    orchestrator_hooks = TelemetryAgentHooks(
+        role_label="Workflow Orchestration & Structuring",
+        model_name=settings.reasoning_model,
+    )
+
+    input_guardrails = (
+        [validate_lead_input_guardrail] if settings.enable_input_guardrail else []
+    )
+    output_guardrails = (
+        [validate_lead_output_guardrail] if settings.enable_output_guardrail else []
+    )
+
+    return Agent[LeadRunContext](
+        name="Lead Orchestrator",
+        model=effective_settings.reasoning_model,
+        instructions=ORCHESTRATOR_INSTRUCTIONS,
+        tools=subagent_tools,
+        input_guardrails=input_guardrails,
+        output_guardrails=output_guardrails,
         output_type=LeadReport,
         hooks=orchestrator_hooks,
     )
@@ -169,12 +211,25 @@ async def run_lead_intelligence_pipeline(
     run_context = LeadRunContext(target_input=target_input, settings=settings)
 
     # Pre-flight deterministic input check (matches Input Guardrail logic)
-    precheck = validate_lead_input(target_input)
+    precheck = validate_lead_input(target_input, settings=settings)
     if not precheck.is_valid:
         run_context.log_tool_event(f"Input Guardrail Tripwire -> {precheck.reason}")
         raise ValueError(precheck.reason)
 
-    orchestrator = create_lead_orchestrator(settings=settings)
+    # Ensure the SDK's default AsyncOpenAI client is bound to the currently active event loop
+    try:
+        import os
+
+        from agents import set_default_openai_client
+        from openai import AsyncOpenAI
+
+        api_key = os.getenv("OPENAI_API_KEY", "").strip()
+        if api_key and not api_key.startswith("sk-YOUR_"):
+            set_default_openai_client(AsyncOpenAI(api_key=api_key), use_for_tracing=True)
+    except Exception:
+        pass
+
+    orchestrator = create_lead_orchestrator(settings=settings, resolve_aliases=True)
     start_ts = time.perf_counter()
     result = await Runner.run(
         starting_agent=orchestrator,
@@ -186,7 +241,7 @@ async def run_lead_intelligence_pipeline(
     report: LeadReport = result.final_output_as(LeadReport)
 
     # Ensure Output Guardrail validation passes
-    postcheck = validate_lead_output(report)
+    postcheck = validate_lead_output(report, settings=settings)
     if not postcheck.is_valid:
         raise ValueError(postcheck.reason)
 
@@ -201,4 +256,3 @@ async def run_lead_intelligence_pipeline(
         )
 
     return report, run_context
-

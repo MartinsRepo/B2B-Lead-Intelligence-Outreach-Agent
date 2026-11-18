@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from lead_agent.config import AgentSettings
 from lead_agent.context import LeadRunContext
 from lead_agent.guardrails import (
     validate_lead_input,
@@ -131,4 +132,23 @@ async def test_output_guardrail_decorator() -> None:
     fn = getattr(validate_lead_output_guardrail, "guardrail_function", validate_lead_output_guardrail)
     res = await fn(ctx, None, report)
     assert res.tripwire_triggered is False
+
+
+def test_configurable_guardrail_settings() -> None:
+    # Private IP allowed when block_private_ips=False
+    allow_local_settings = AgentSettings(block_private_ips=False)
+    assert validate_lead_input("http://localhost:8000", settings=allow_local_settings).is_valid is True
+
+    # Input guardrail completely bypassed when enable_input_guardrail=False
+    disabled_input_settings = AgentSettings(enable_input_guardrail=False)
+    assert validate_lead_input("arbitrary text target", settings=disabled_input_settings).is_valid is True
+
+    # Output guardrail custom min_sources_required and custom blocked phrase
+    report = _make_valid_report()
+    strict_sources = AgentSettings(min_sources_required=3)
+    assert validate_lead_output(report, settings=strict_sources).is_valid is False
+
+    custom_spam = AgentSettings(blocked_spam_phrases=("payments team",))
+    assert validate_lead_output(report, settings=custom_spam).is_valid is False
+
 

@@ -9,6 +9,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+DEFAULT_SPAM_PHRASES: tuple[str, ...] = (
+    "guaranteed 10x",
+    "act now before it's too late",
+    "100% free money",
+    "click here immediately",
+)
+
 
 @dataclass(frozen=True)
 class ModelPricing:
@@ -26,7 +33,7 @@ class ModelPricing:
 
 @dataclass
 class AgentSettings:
-    """Runtime settings for Cost-Aware Model Routing and web scraping."""
+    """Runtime settings for Cost-Aware Model Routing, Guardrails, and Sub-Agents."""
 
     fast_model: str = field(
         default_factory=lambda: os.getenv("FAST_MODEL", "gpt-6-luna")
@@ -53,6 +60,25 @@ class AgentSettings:
         default_factory=lambda: int(os.getenv("MAX_SCRAPE_CHARS", "6000"))
     )
 
+    # 1. Input Guardrail Configuration
+    enable_input_guardrail: bool = True
+    block_private_ips: bool = True
+
+    # 2. Agents-as-Tools (.as_tool()) Delegation Configuration
+    enable_company_news_agent: bool = True
+    enable_tech_stack_agent: bool = True
+    enable_copywriter_agent: bool = True
+
+    # 3. Output Guardrail Configuration
+    enable_output_guardrail: bool = True
+    min_sources_required: int = 1
+    min_pitch_length: int = 40
+    enable_anti_spam_check: bool = True
+    blocked_spam_phrases: tuple[str, ...] = DEFAULT_SPAM_PHRASES
+
+    # 4. Structured Output Configuration
+    enforce_structured_output: bool = True
+
     def get_pricing_for_model(self, model_name: str) -> ModelPricing:
         """Return the pricing tier matching a given model name."""
         normalized = model_name.lower().strip()
@@ -67,4 +93,3 @@ class AgentSettings:
 
 
 DEFAULT_SETTINGS = AgentSettings()
-

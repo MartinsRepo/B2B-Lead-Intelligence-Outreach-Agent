@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import threading
 from pathlib import Path
 
 import streamlit as st
@@ -16,30 +17,74 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from lead_agent.agents.orchestrator import run_lead_intelligence_pipeline  # noqa: E402
-from lead_agent.config import AgentSettings  # noqa: E402
+from lead_agent.config import DEFAULT_SPAM_PHRASES, AgentSettings  # noqa: E402
 from lead_agent.context import LeadRunContext  # noqa: E402
 from lead_agent.schemas import LeadReport  # noqa: E402
-from lead_agent.showcase import build_showcase_run  # noqa: E402
+
+
+@st.cache_resource
+def _get_background_event_loop() -> asyncio.AbstractEventLoop:
+    """Create a persistent background event loop running in its own daemon thread.
+
+    This avoids conflicts with Streamlit/Uvicorn's thread event loop and keeps the
+    OpenAI Agents SDK's internal AsyncOpenAI/HTTPX client bound to a single open loop.
+    """
+    loop = asyncio.new_event_loop()
+
+    def _run_loop(event_loop: asyncio.AbstractEventLoop) -> None:
+        asyncio.set_event_loop(event_loop)
+        event_loop.run_forever()
+
+    thread = threading.Thread(
+        target=_run_loop, args=(loop,), name="lead-agent-async-loop", daemon=True
+    )
+    thread.start()
+    return loop
 
 
 def _run_async(coro):
-    """Run an async coroutine safely inside Streamlit's synchronous execution loop."""
+    """Submit a coroutine to the persistent background event loop and wait for its result."""
     try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-
-    if loop and loop.is_running():
-        new_loop = asyncio.new_event_loop()
-        try:
-            return new_loop.run_until_complete(coro)
-        finally:
-            new_loop.close()
-    return asyncio.run(coro)
+        loop = _get_background_event_loop()
+        future = asyncio.run_coroutine_threadsafe(coro, loop)
+        return future.result()
+    except Exception:
+        coro.close()
+        raise
 
 
-def render_sidebar() -> tuple[str, AgentSettings]:
-    """Render sidebar controls and return (execution_mode, AgentSettings)."""
+def inject_custom_css() -> None:
+    """Inject subtle CSS so the telemetry card matches the rounded, divided layout."""
+    st.markdown(
+        """
+        <style>
+        /* Add vertical dividers between metrics inside the telemetry container */
+        div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:not(:first-child) div[data-testid="stMetric"] {
+            border-left: 1px solid rgba(250, 250, 250, 0.18);
+            padding-left: 1.1rem;
+        }
+        .hero-subtitle {
+            font-size: 1.28rem;
+            font-weight: 600;
+            color: #f8fafc;
+            margin-top: -0.35rem;
+            margin-bottom: 0.35rem;
+        }
+        .hero-description {
+            font-size: 1.06rem;
+            line-height: 1.58;
+            color: rgba(241, 245, 249, 0.84);
+            margin-bottom: 1.15rem;
+            max-width: 1180px;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_sidebar() -> AgentSettings:
+    """Render sidebar controls and return configured AgentSettings."""
     with st.sidebar:
         st.markdown("## ⚙️ Agent Control Plane")
         has_api_key = bool(
@@ -47,33 +92,16 @@ def render_sidebar() -> tuple[str, AgentSettings]:
             and not os.getenv("OPENAI_API_KEY", "").startswith("sk-YOUR_")
         )
 
-        mode_options = [
-            "✨ Showcase / Demo Mode (LinkedIn Ready)",
-            "🚀 Live OpenAI Agents SDK Mode",
-        ]
-        default_idx = 1 if has_api_key else 0
-        execution_mode = st.radio(
-            "Execution Mode",
-            options=mode_options,
-            index=default_idx,
-            help=(
-                "Showcase Mode runs real Input/Output Guardrails and deterministic Pydantic "
-                "validation with realistic multi-agent telemetry. Live Mode executes real "
-                "OpenAI Agents SDK calls."
-            ),
-        )
-
-        if execution_mode.startswith("🚀") and not has_api_key:
+        if not has_api_key:
             api_key_input = st.text_input(
                 "OpenAI API Key",
                 type="password",
                 placeholder="sk-...",
-                help="Required for Live OpenAI Agents SDK execution.",
+                help="Required for OpenAI Agents SDK execution.",
             )
             if api_key_input:
                 os.environ["OPENAI_API_KEY"] = api_key_input
 
-        st.divider()
         st.markdown("### 🧠 Cost-Aware Model Routing")
         preset = st.selectbox(
             "Model Routing Preset",
@@ -102,54 +130,156 @@ def render_sidebar() -> tuple[str, AgentSettings]:
 
         st.divider()
         st.markdown("### 🛡️ Active Guardrails")
-        st.markdown(
-            "- **Input Guardrail:** Domain & LinkedIn URL Regex + Private IP Tripwire\n"
-            "- **Agents-as-Tools:** `.as_tool()` sub-agent delegation\n"
-            "- **Output Guardrail:** Source URL verification & anti-spam tone check\n"
-            "- **Structured Output:** `output_type=LeadReport` (Pydantic v2)"
+
+        enable_input_guardrail = st.toggle(
+            "Input Guardrail (Domain & URL Regex)",
+            value=True,
+            help="Validates corporate domains/URLs before any LLM tokens are spent.",
+        )
+        enable_output_guardrail = st.toggle(
+            "Output Guardrail (Sources & Tone)",
+            value=True,
+            help="Verifies HTTP/HTTPS source citations, minimum pitch length, and anti-spam tone.",
+        )
+        enforce_structured_output = st.toggle(
+            "Structured Output (LeadReport Schema)",
+            value=True,
+            disabled=True,
+            help="Enforces strict Pydantic v2 output_type=LeadReport JSON validation.",
         )
 
-    settings = AgentSettings(
+        with st.expander("⚙️ Configure Guardrail & Tool Rules", expanded=False):
+            st.markdown("**1. Input Guardrail Policy**")
+            block_private_ips = st.checkbox(
+                "Block Private & Localhost IPs (SSRF Tripwire)",
+                value=True,
+                disabled=not enable_input_guardrail,
+            )
+
+            st.markdown("**2. Agents-as-Tools (`.as_tool()`) Delegation**")
+            enable_company_news_agent = st.checkbox(
+                "Company & News Sub-Agent",
+                value=True,
+            )
+            enable_tech_stack_agent = st.checkbox(
+                "Tech-Stack & Job-Board Sub-Agent",
+                value=True,
+            )
+            enable_copywriter_agent = st.checkbox(
+                "Outreach Copywriter Sub-Agent",
+                value=True,
+            )
+
+            st.markdown("**3. Output Guardrail Thresholds**")
+            min_sources_required = st.number_input(
+                "Min. Verified Source Citations",
+                min_value=0,
+                max_value=5,
+                value=1,
+                step=1,
+                disabled=not enable_output_guardrail,
+            )
+            min_pitch_length = st.slider(
+                "Min. Pitch Length (chars)",
+                min_value=20,
+                max_value=250,
+                value=40,
+                step=10,
+                disabled=not enable_output_guardrail,
+            )
+            enable_anti_spam_check = st.checkbox(
+                "Enable Anti-Spam Phrase Filter",
+                value=True,
+                disabled=not enable_output_guardrail,
+            )
+            raw_phrases = st.text_area(
+                "Blocked Spam Phrases (comma-separated)",
+                value=", ".join(DEFAULT_SPAM_PHRASES),
+                disabled=not (enable_output_guardrail and enable_anti_spam_check),
+                height=80,
+            )
+            blocked_phrases = tuple(
+                p.strip() for p in raw_phrases.split(",") if p.strip()
+            )
+
+    return AgentSettings(
         fast_model=fast_model,
         reasoning_model=reasoning_model,
+        enable_input_guardrail=enable_input_guardrail,
+        block_private_ips=block_private_ips,
+        enable_company_news_agent=enable_company_news_agent,
+        enable_tech_stack_agent=enable_tech_stack_agent,
+        enable_copywriter_agent=enable_copywriter_agent,
+        enable_output_guardrail=enable_output_guardrail,
+        min_sources_required=int(min_sources_required),
+        min_pitch_length=int(min_pitch_length),
+        enable_anti_spam_check=enable_anti_spam_check,
+        blocked_spam_phrases=blocked_phrases or DEFAULT_SPAM_PHRASES,
+        enforce_structured_output=enforce_structured_output,
     )
-    return execution_mode, settings
 
 
-def render_telemetry_banner(context: LeadRunContext) -> None:
-    """Display top-level token, cost savings, and latency KPIs."""
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric(
-        label="Total Tokens Consumed",
-        value=f"{context.total_tokens:,}",
-        delta=f"{context.total_input_tokens:,} in / {context.total_output_tokens:,} out",
-        delta_color="off",
-    )
-    col2.metric(
-        label="Estimated Run Cost (USD)",
-        value=f"${context.total_cost_usd:.5f}",
-        delta=f"-${context.cost_savings_usd:.5f} vs. all-reasoning",
-        delta_color="normal",
-    )
-    col3.metric(
-        label="Cost-Aware Routing Savings",
-        value=f"{context.cost_savings_pct:.1f}%",
-        delta=f"Baseline: ${context.baseline_all_reasoning_cost_usd:.5f}",
-        delta_color="normal",
-    )
-    col4.metric(
-        label="End-to-End Latency",
-        value=f"{context.total_latency_seconds:.2f}s",
-        delta=f"{len(context.agent_records)} agents ({context.total_requests} API calls)",
-        delta_color="off",
-    )
+def render_telemetry_card(context: LeadRunContext | None) -> None:
+    """Display the 4-column token, cost savings, and latency KPI card."""
+    with st.container(border=True):
+        col1, col2, col3, col4 = st.columns(4)
+        if context is not None:
+            col1.metric(
+                label="Total Tokens Consumed",
+                value=f"{context.total_tokens:,}",
+                delta=f"{context.total_input_tokens:,} in / {context.total_output_tokens:,} out",
+                delta_color="off",
+            )
+            col2.metric(
+                label="Estimated Run Cost (USD)",
+                value=f"${context.total_cost_usd:.5f}",
+                delta=f"-${context.cost_savings_usd:.5f} vs. all-reasoning",
+                delta_color="inverse",
+            )
+            col3.metric(
+                label="Cost-Aware Routing Savings",
+                value=f"{context.cost_savings_pct:.1f}%",
+                delta=f"Baseline: ${context.baseline_all_reasoning_cost_usd:.5f}",
+                delta_color="normal",
+            )
+            col4.metric(
+                label="End-to-End Latency",
+                value=f"{context.total_latency_seconds:.2f}s",
+                delta=f"{len(context.agent_records)} agents ({context.total_requests} API calls)",
+                delta_color="off",
+            )
+        else:
+            col1.metric(
+                label="Total Tokens Consumed",
+                value="—",
+                delta="0 in / 0 out",
+                delta_color="off",
+            )
+            col2.metric(
+                label="Estimated Run Cost (USD)",
+                value="$0.00000",
+                delta="Awaiting agent run",
+                delta_color="off",
+            )
+            col3.metric(
+                label="Cost-Aware Routing Savings",
+                value="0.0%",
+                delta="Baseline: $0.00000",
+                delta_color="off",
+            )
+            col4.metric(
+                label="End-to-End Latency",
+                value="0.00s",
+                delta="4 agents ready",
+                delta_color="off",
+            )
 
 
 def render_report_tabs(report: LeadReport, context: LeadRunContext) -> None:
     """Render the four primary analysis and observability tabs."""
     tab_pitch, tab_intel, tab_obs, tab_json = st.tabs(
         [
-            "🔥 Before vs. After Outreach (LinkedIn Hook)",
+            "🔥 Outreach Synthesis (Baseline vs. Multi-Agent)",
             "🏢 Company & Tech-Stack Intelligence",
             "📊 Token & Cost Observability",
             "🧩 Deterministic JSON (LeadReport)",
@@ -164,12 +294,12 @@ def render_report_tabs(report: LeadReport, context: LeadRunContext) -> None:
 
         col_before, col_after = st.columns(2)
         with col_before:
-            st.markdown("#### ❌ Before: Generic Single-Prompt AI Message")
-            st.caption("Unresearched, buzzword-heavy cold outreach that gets ignored or marked as spam.")
+            st.markdown("#### ❌ Standard Single-Prompt Baseline")
+            st.caption("Unresearched, generic cold outreach without live press or tech-stack grounding.")
             st.code(report.outreach.generic_ai_message, language="text")
 
         with col_after:
-            st.markdown("#### ✅ After: Multi-Agent Grounded Pitch")
+            st.markdown("#### ✅ Multi-Agent Grounded Outreach Pitch")
             st.caption(
                 "Synthesized by the Outreach Copywriter Agent (`gpt-6.2-sol`) using live news triggers, "
                 "job-board hiring signals, and detected tech-stack bottlenecks."
@@ -179,7 +309,7 @@ def render_report_tabs(report: LeadReport, context: LeadRunContext) -> None:
         st.divider()
         col_hook, col_cta = st.columns(2)
         with col_hook:
-            st.markdown("##### 💬 LinkedIn Connection Icebreaker (<300 chars)")
+            st.markdown("##### 💬 Direct Message / Short-Form Icebreaker (<300 chars)")
             st.write(f"> {report.outreach.icebreaker_hook}")
         with col_cta:
             st.markdown("##### 🤝 Low-Friction Call to Action (CTA)")
@@ -245,7 +375,7 @@ def render_report_tabs(report: LeadReport, context: LeadRunContext) -> None:
             }
             for r in context.agent_records
         ]
-        st.dataframe(rows, use_container_width=True, hide_index=True)
+        st.dataframe(rows, width="stretch", hide_index=True)
 
         st.markdown("#### 🕵️ Live Execution Trace & Guardrail Log")
         st.code("\n".join(context.tool_events), language="text")
@@ -264,75 +394,83 @@ def render_report_tabs(report: LeadReport, context: LeadRunContext) -> None:
 
 def main() -> None:
     st.set_page_config(
-        page_title="LinkedIn-to-Lead Intelligence & Outreach Agent",
+        page_title="B2B Lead Intelligence & Outreach Agent",
         page_icon="🎯",
         layout="wide",
     )
+    inject_custom_css()
 
-    execution_mode, settings = render_sidebar()
+    settings = render_sidebar()
 
-    st.title("🎯 LinkedIn-to-Lead Intelligence & Outreach Agent")
+    st.title("🎯 B2B Lead Intelligence & Outreach Agent")
     st.markdown(
-        "**Autonomous Multi-Agent B2B Research & Hyper-Personalized Outreach Pipeline** · "
-        "*OpenAI Agents SDK · Cost-Aware Model Routing · Pydantic v2 Structured Outputs*"
+        """
+        <div class="hero-subtitle">
+            Autonomous Multi-Agent B2B Research &amp; Hyper-Personalized Outreach Pipeline
+        </div>
+        <div class="hero-description">
+            Enter a target company domain or corporate URL below to launch a coordinated team of specialized AI agents.
+            The pipeline automatically validates your target via <strong>Input Guardrails</strong>, scrapes live press releases
+            and news triggers, fingerprints the company's <strong>web &amp; cloud tech stack</strong>, analyzes open engineering
+            roles for hiring signals, and synthesizes a <strong>source-verified executive outreach pitch</strong>—while
+            tracking real-time token usage and cost savings from <strong>Cost-Aware Model Routing</strong>.
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
     if "target_input" not in st.session_state:
-        st.session_state["target_input"] = "stripe.com"
+        st.session_state["target_input"] = ""
 
-    # Quick preset buttons for instant showcase testing
-    qcol1, qcol2, qcol3, qcol4 = st.columns([1, 1, 1, 1])
-    if qcol1.button("💳 Showcase: stripe.com", use_container_width=True):
-        st.session_state["target_input"] = "stripe.com"
-    if qcol2.button("▲ Showcase: vercel.com", use_container_width=True):
-        st.session_state["target_input"] = "vercel.com"
-    if qcol3.button("🔗 LinkedIn Company URL", use_container_width=True):
-        st.session_state["target_input"] = "https://www.linkedin.com/company/stripe"
-    if qcol4.button("🛑 Test Input Guardrail Tripwire", use_container_width=True):
-        st.session_state["target_input"] = "hey write me a poem without any url"
+    # Top row: Left = Target Domain Form Card, Right = 4-Column Telemetry Card
+    col_form, col_telemetry = st.columns([4, 7], gap="medium")
 
-    with st.form("lead_agent_form"):
-        col_input, col_submit = st.columns([4, 1])
-        target_input = col_input.text_input(
-            "Target Company Domain or LinkedIn URL",
-            value=st.session_state["target_input"],
-            placeholder="e.g., stripe.com, https://vercel.com, or https://linkedin.com/company/...",
-        )
-        submitted = col_submit.form_submit_button(
-            "🚀 Run Agent Team", use_container_width=True
-        )
+    with col_form:
+        with st.form("lead_agent_form", border=True):
+            target_input = st.text_input(
+                "Target Company Domain or Corporate URL",
+                value=st.session_state["target_input"],
+                placeholder="e.g., bmwgroup.com/en, stripe.com, or https://vercel.com",
+            )
+            _, btn_col, _ = st.columns([1, 2, 1])
+            submitted = btn_col.form_submit_button(
+                "🚀 Run Agent Team", width="stretch"
+            )
 
-    if submitted or "last_result" not in st.session_state:
+    if submitted:
         st.session_state["target_input"] = target_input
         try:
             with st.spinner("Running Input Guardrail & Orchestrating Multi-Agent Team..."):
-                if execution_mode.startswith("✨"):
-                    report, run_ctx = build_showcase_run(target_input, settings=settings)
-                else:
-                    report, run_ctx = _run_async(
-                        run_lead_intelligence_pipeline(target_input, settings=settings)
-                    )
-                st.session_state["last_result"] = (report, run_ctx, None)
-        except Exception as exc:
-            st.session_state["last_result"] = (None, None, str(exc))
+                report, run_ctx = _run_async(
+                    run_lead_intelligence_pipeline(target_input, settings=settings)
+                )
+                st.session_state["last_result"] = (report, run_ctx, None, None)
+        except ValueError as guardrail_exc:
+            st.session_state["last_result"] = (None, None, str(guardrail_exc), None)
+        except Exception as api_exc:
+            st.session_state["last_result"] = (None, None, None, str(api_exc))
 
-    report, run_ctx, error_msg = st.session_state.get("last_result", (None, None, None))
+    report, run_ctx, guardrail_error, api_error = st.session_state.get(
+        "last_result", (None, None, None, None)
+    )
 
-    if error_msg:
+    with col_telemetry:
+        render_telemetry_card(run_ctx)
+
+    if guardrail_error:
         st.error(
-            f"🛡️ **Input / Output Guardrail Triggered:** {error_msg}\n\n"
+            f"🛡️ **Input / Output Guardrail Triggered:** {guardrail_error}\n\n"
             "*0 reasoning tokens were wasted on this invalid request.*"
         )
+    elif api_error:
+        st.error(f"⚠️ **Execution Error:** `{api_error}`")
     elif report is not None and run_ctx is not None:
         st.success(
             f"✅ **Guardrails Passed** · Completed multi-agent analysis for **{report.company_name}** "
             f"using `{settings.fast_model}` (extraction) + `{settings.reasoning_model}` (orchestration & copy)."
         )
-        render_telemetry_banner(run_ctx)
-        st.divider()
         render_report_tabs(report, run_ctx)
 
 
 if __name__ == "__main__":
     main()
-

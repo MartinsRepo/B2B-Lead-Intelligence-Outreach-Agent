@@ -20,7 +20,6 @@ from lead_agent.schemas import (
     SourceCitation,
     TechStackAnalysis,
 )
-from lead_agent.showcase import SHOWCASE_PRESETS, build_showcase_run
 
 __all__ = [
     "AgentSettings",
@@ -30,11 +29,9 @@ __all__ = [
     "LeadRunContext",
     "ModelPricing",
     "OutreachPitch",
-    "SHOWCASE_PRESETS",
     "SourceCitation",
     "TechStackAnalysis",
     "ValidationOutcome",
-    "build_showcase_run",
     "create_company_news_agent",
     "create_copywriter_agent",
     "create_lead_orchestrator",
@@ -43,4 +40,3 @@ __all__ = [
     "validate_lead_input",
     "validate_lead_output",
 ]
-

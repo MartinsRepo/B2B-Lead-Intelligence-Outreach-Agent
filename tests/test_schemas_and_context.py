@@ -1,4 +1,4 @@
-"""Unit tests for Pydantic schemas, Cost-Aware Routing math, and Showcase execution."""
+"""Unit tests for Pydantic schemas and Cost-Aware Routing telemetry math."""
 
 from __future__ import annotations
 
@@ -7,8 +7,12 @@ from pydantic import ValidationError
 
 from lead_agent.config import AgentSettings
 from lead_agent.context import LeadRunContext
-from lead_agent.schemas import SourceCitation
-from lead_agent.showcase import build_showcase_run
+from lead_agent.schemas import (
+    LeadReport,
+    OutreachPitch,
+    SourceCitation,
+    TechStackAnalysis,
+)
 
 
 def test_source_citation_rejects_non_http_url() -> None:
@@ -58,17 +62,37 @@ def test_cost_aware_routing_calculates_savings_accurately() -> None:
     assert ctx.cost_savings_pct > 50.0
 
 
-def test_showcase_run_presets_and_dynamic_domains() -> None:
-    report_stripe, ctx_stripe = build_showcase_run("stripe.com")
-    assert report_stripe.company_name == "Stripe"
-    assert len(ctx_stripe.agent_records) == 4
-    assert ctx_stripe.cost_savings_pct > 60.0
-
-    report_custom, ctx_custom = build_showcase_run("personio.de")
-    assert report_custom.company_name == "Personio"
-    assert report_custom.target_domain == "https://personio.de"
-    assert len(report_custom.sources) >= 1
-
-    with pytest.raises(ValueError, match="not a valid company domain"):
-        build_showcase_run("invalid non-domain text")
-
+def test_lead_report_schema_serialization() -> None:
+    report = LeadReport(
+        company_name="BMW Group",
+        target_domain="https://www.bmwgroup.com/en",
+        industry="Automotive",
+        executive_summary="Global manufacturer of premium automobiles and motorcycles.",
+        recent_news_and_triggers=["Expanded Neue Klasse EV production milestones."],
+        identified_pain_points=["Supply chain and software-defined vehicle telemetry scale."],
+        tech_stack=TechStackAnalysis(
+            detected_technologies=["React", "TypeScript", "AWS", "Kubernetes"],
+            hiring_signals=["Senior Cloud Architect (AWS / Kubernetes)"],
+            inferred_infrastructure_needs="Connected vehicle telemetry processing at scale.",
+        ),
+        outreach=OutreachPitch(
+            subject_line="Scaling EV telemetry for BMW's Neue Klasse architecture",
+            generic_ai_message="Hi, I hope this email finds you well!",
+            hyper_personalized_pitch=(
+                "Noticed BMW Group's latest Neue Klasse EV milestones and cloud architecture hiring "
+                "across AWS and Kubernetes. We help automotive platform teams optimize telemetry ingestion."
+            ),
+            icebreaker_hook="Impressed by BMW's Neue Klasse software-defined vehicle push—would love to connect!",
+            call_to_action="Open to a 10-minute benchmark review?",
+        ),
+        sources=[
+            SourceCitation(
+                title="BMW Group Corporate Portal",
+                url="https://www.bmwgroup.com/en",
+                snippet="Official BMW Group corporate news and strategy.",
+            )
+        ],
+    )
+    dumped = report.model_dump()
+    assert dumped["company_name"] == "BMW Group"
+    assert len(dumped["sources"]) == 1
