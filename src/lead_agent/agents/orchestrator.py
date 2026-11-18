@@ -1,0 +1,204 @@
+"""Lead Orchestrator Agent using the OpenAI Agents SDK (.as_tool() pattern)."""
+
+from __future__ import annotations
+
+import time
+from typing import Any
+
+try:
+    from agents import Agent, AgentHooks, RunContextWrapper, Runner
+except ImportError:  # pragma: no cover
+    Agent = Any  # type: ignore[misc,assignment]
+    RunContextWrapper = Any  # type: ignore[misc,assignment]
+    Runner = Any  # type: ignore[misc,assignment]
+
+    class AgentHooks:  # type: ignore[no-redef]
+        pass
+
+
+from lead_agent.agents.company_news_agent import create_company_news_agent
+from lead_agent.agents.copywriter_agent import create_copywriter_agent
+from lead_agent.agents.tech_stack_agent import create_tech_stack_agent
+from lead_agent.config import DEFAULT_SETTINGS, AgentSettings
+from lead_agent.context import LeadRunContext
+from lead_agent.guardrails import (
+    validate_lead_input,
+    validate_lead_input_guardrail,
+    validate_lead_output,
+    validate_lead_output_guardrail,
+)
+from lead_agent.schemas import LeadReport
+
+ORCHESTRATOR_INSTRUCTIONS = """You are the Lead Orchestrator Agent controlling an autonomous B2B Lead Intelligence & Outreach workflow.
+
+Your workflow MUST follow these exact steps:
+1. Invoke `company_news_research_tool` with the target domain or LinkedIn URL to gather company overview, recent press releases/news, and source links.
+2. Invoke `tech_stack_detection_tool` with the target domain or URL to detect their web/cloud stack and engineering hiring signals from job postings.
+3. Pass the combined intelligence to `outreach_copywriter_tool` to generate the 'Before' (generic AI) vs. 'After' (hyper-personalized) outreach pitch and LinkedIn hook.
+4. Synthesize all findings into the final `LeadReport` structured schema, ensuring every claim is backed by verified HTTP/HTTPS URLs in `sources`."""
+
+
+class TelemetryAgentHooks(AgentHooks[LeadRunContext]):  # type: ignore[misc]
+    """Lifecycle hooks capturing per-agent latency and token telemetry into LeadRunContext."""
+
+    def __init__(self, role_label: str, model_name: str) -> None:
+        self.role_label = role_label
+        self.model_name = model_name
+        self._start_times: dict[int, float] = {}
+        self._usage_snapshots: dict[int, tuple[int, int, int]] = {}
+
+    async def on_start(
+        self, context: RunContextWrapper[LeadRunContext], agent: Agent[LeadRunContext]
+    ) -> None:
+        key = id(agent)
+        self._start_times[key] = time.perf_counter()
+        usage = getattr(context, "usage", None)
+        if usage is not None:
+            self._usage_snapshots[key] = (
+                int(getattr(usage, "input_tokens", 0) or 0),
+                int(getattr(usage, "output_tokens", 0) or 0),
+                int(getattr(usage, "requests", 0) or 0),
+            )
+        if hasattr(context, "context") and isinstance(context.context, LeadRunContext):
+            context.context.log_tool_event(
+                f"Agent started: {agent.name} [{self.model_name}]"
+            )
+
+    async def on_end(
+        self,
+        context: RunContextWrapper[LeadRunContext],
+        agent: Agent[LeadRunContext],
+        output: Any,
+    ) -> None:
+        key = id(agent)
+        started = self._start_times.pop(key, time.perf_counter())
+        elapsed = max(0.01, time.perf_counter() - started)
+
+        prev_in, prev_out, prev_req = self._usage_snapshots.pop(key, (0, 0, 0))
+        usage = getattr(context, "usage", None)
+        cur_in = int(getattr(usage, "input_tokens", 0) or 0) if usage else 0
+        cur_out = int(getattr(usage, "output_tokens", 0) or 0) if usage else 0
+        cur_req = int(getattr(usage, "requests", 0) or 0) if usage else 0
+
+        delta_in = max(0, cur_in - prev_in)
+        delta_out = max(0, cur_out - prev_out)
+        delta_req = max(1, cur_req - prev_req)
+
+        if hasattr(context, "context") and isinstance(context.context, LeadRunContext):
+            context.context.record_agent_usage(
+                agent_name=agent.name,
+                role=self.role_label,
+                model=self.model_name,
+                input_tokens=delta_in,
+                output_tokens=delta_out,
+                requests=delta_req,
+                latency_seconds=elapsed,
+            )
+            context.context.log_tool_event(
+                f"Agent completed: {agent.name} ({delta_in + delta_out} tokens in {elapsed:.2f}s)"
+            )
+
+
+def create_lead_orchestrator(
+    settings: AgentSettings = DEFAULT_SETTINGS,
+) -> Agent[LeadRunContext]:
+    """Assemble the multi-agent hierarchy using the OpenAI Agents SDK .as_tool() pattern."""
+    company_agent = create_company_news_agent(
+        settings=settings,
+        hooks=TelemetryAgentHooks(
+            role_label="Scraping & News Extraction", model_name=settings.fast_model
+        ),
+    )
+    tech_agent = create_tech_stack_agent(
+        settings=settings,
+        hooks=TelemetryAgentHooks(
+            role_label="Tech-Stack & Job-Board Parsing", model_name=settings.fast_model
+        ),
+    )
+    copywriter_agent = create_copywriter_agent(
+        settings=settings,
+        hooks=TelemetryAgentHooks(
+            role_label="Executive Pitch Synthesis", model_name=settings.reasoning_model
+        ),
+    )
+
+    orchestrator_hooks = TelemetryAgentHooks(
+        role_label="Workflow Orchestration & Structuring",
+        model_name=settings.reasoning_model,
+    )
+
+    return Agent[LeadRunContext](
+        name="Lead Orchestrator",
+        model=settings.reasoning_model,
+        instructions=ORCHESTRATOR_INSTRUCTIONS,
+        tools=[
+            company_agent.as_tool(
+                tool_name="company_news_research_tool",
+                tool_description=(
+                    "Scrapes the target company's website, press releases, and recent news "
+                    "using the fast extraction model."
+                ),
+            ),
+            tech_agent.as_tool(
+                tool_name="tech_stack_detection_tool",
+                tool_description=(
+                    "Detects the target company's frontend/cloud tech stack and scans job "
+                    "postings for engineering hiring signals using the fast extraction model."
+                ),
+            ),
+            copywriter_agent.as_tool(
+                tool_name="outreach_copywriter_tool",
+                tool_description=(
+                    "Synthesizes company news and tech stack signals into a Before/After "
+                    "B2B outreach pitch using the reasoning model."
+                ),
+            ),
+        ],
+        input_guardrails=[validate_lead_input_guardrail],
+        output_guardrails=[validate_lead_output_guardrail],
+        output_type=LeadReport,
+        hooks=orchestrator_hooks,
+    )
+
+
+async def run_lead_intelligence_pipeline(
+    target_input: str,
+    settings: AgentSettings = DEFAULT_SETTINGS,
+) -> tuple[LeadReport, LeadRunContext]:
+    """Execute the full Lead Intelligence & Outreach Agent workflow with guardrails and telemetry."""
+    run_context = LeadRunContext(target_input=target_input, settings=settings)
+
+    # Pre-flight deterministic input check (matches Input Guardrail logic)
+    precheck = validate_lead_input(target_input)
+    if not precheck.is_valid:
+        run_context.log_tool_event(f"Input Guardrail Tripwire -> {precheck.reason}")
+        raise ValueError(precheck.reason)
+
+    orchestrator = create_lead_orchestrator(settings=settings)
+    start_ts = time.perf_counter()
+    result = await Runner.run(
+        starting_agent=orchestrator,
+        input=f"Analyze target B2B company and generate LeadReport for: {precheck.normalized_target}",
+        context=run_context,
+    )
+    elapsed = time.perf_counter() - start_ts
+
+    report: LeadReport = result.final_output_as(LeadReport)
+
+    # Ensure Output Guardrail validation passes
+    postcheck = validate_lead_output(report)
+    if not postcheck.is_valid:
+        raise ValueError(postcheck.reason)
+
+    # Fallback if SDK hooks did not populate records (e.g. mocked Runner in unit tests)
+    if not run_context.agent_records:
+        run_context.record_from_sdk_result(
+            agent_name="Lead Orchestrator",
+            role="Workflow Orchestration & Structuring",
+            model=settings.reasoning_model,
+            run_result=result,
+            latency_seconds=elapsed,
+        )
+
+    return report, run_context
+
