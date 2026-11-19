@@ -69,13 +69,16 @@ class AgentSettings:
     enable_tech_stack_agent: bool = True
     enable_copywriter_agent: bool = True
 
-    # 3. Output Guardrail Configuration
+    # 3. Output Guardrail & Fact-Checking Configuration
     enable_output_guardrail: bool = True
     min_sources_required: int = 1
     min_source_credibility: float = 0.50
     min_pitch_length: int = 40
     enable_anti_spam_check: bool = True
     blocked_spam_phrases: tuple[str, ...] = DEFAULT_SPAM_PHRASES
+    enable_fact_checking: bool = True
+    min_grounding_score: float = 0.25
+    unverified_claim_policy: str = "mark_as_hypothesis"  # "mark_as_hypothesis" or "discard"
 
     # 4. Structured Output Configuration
     enforce_structured_output: bool = True

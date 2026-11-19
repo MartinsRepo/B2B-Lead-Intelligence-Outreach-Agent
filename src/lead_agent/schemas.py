@@ -56,6 +56,37 @@ class SourceCitation(BaseModel):
         return cleaned
 
 
+class VerifiedClaim(BaseModel):
+    """Fact-checked claim mapped to a re-fetched source passage and grounding score."""
+
+    claim: str = Field(description="The factual claim or pain point statement being verified.")
+    category: str = Field(
+        default="news_trigger",
+        description="Claim category: 'news_trigger' or 'pain_point'.",
+    )
+    source_title: str = Field(
+        default="",
+        description="Title of the matched source reference.",
+    )
+    source_url: str = Field(
+        description="HTTP/HTTPS URL of the source against which the claim was verified."
+    )
+    matched_excerpt: str = Field(
+        default="",
+        description="Relevant passage extracted from the re-fetched original source text.",
+    )
+    grounding_score: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Lexical and high-signal entity support score (0.0 to 1.0) against the source passage.",
+    )
+    verification_status: str = Field(
+        default="verified",
+        description="Status: 'verified', 'partially_supported', or 'inferred_hypothesis'.",
+    )
+
+
 class TechStackAnalysis(BaseModel):
     """Technical footprint and engineering hiring intelligence."""
 
@@ -124,4 +155,8 @@ class LeadReport(BaseModel):
     sources: list[SourceCitation] = Field(
         min_length=1,
         description="Verified, quality-scored source citations supporting the findings in this report.",
+    )
+    verified_claims: list[VerifiedClaim] = Field(
+        default_factory=list,
+        description="5-step fact-check audit mapping each claim to its re-fetched source excerpt and grounding score.",
     )

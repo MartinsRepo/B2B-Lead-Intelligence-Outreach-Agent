@@ -11,6 +11,7 @@ Given a target company domain (e.g., `bmwgroup.com/en`, `stripe.com`, `vercel.co
 - **Multi-Agent Orchestration (`.as_tool()` Pattern):** Uses the OpenAI Agents SDK to coordinate three specialized sub-agents (`Company & News Agent`, `Tech-Stack Agent`, and `Outreach Copywriter Agent`) under a central `Lead Orchestrator`.
 - **Cost-Aware Model Routing:** Routes high-volume HTML scraping and job-board extraction tasks to a fast, low-cost model tier (`gpt-6-luna` / `gpt-4o-mini`) while reserving a high-reasoning model tier (`gpt-6.2-sol` / `gpt-4o`) for orchestration and executive copywriting.
 - **Multi-Source Research & Source Quality Scoring:** Combines corporate newsroom subpage crawling, RSS/Atom feed auto-discovery, JSON-LD & Next.js (`__NEXT_DATA__`) hydration extraction (with automatic JS reader fallback for SPAs), and external Google News RSS search—scoring every source on **Credibility (45%)**, **Relevance (40%)**, and **Recency (15%)**.
+- **5-Step Fact-Verification & Claim-Grounding Engine:** Goes beyond URL validation by (1) linking each claim to a source reference, (2) re-fetching the original source text, (3) extracting the matching passage, (4) scoring claim-to-passage overlap (`grounding_score`), and (5) either labeling unsupported claims as `[Hypothesis / Inferred]` or discarding them.
 - **Configurable Guardrails & Policy Control Plane:**
   - *Input Guardrail:* Validates domain/corporate URL format and blocks malformed inputs or private/localhost IPs (SSRF protection) before any LLM tokens are spent.
   - *Modular `.as_tool()` Toggles:* Enable or disable individual sub-agents on the fly from the Streamlit sidebar.
@@ -56,8 +57,9 @@ B2B-Lead-Intelligence-Outreach-Agent/
 │   ├── __init__.py
 │   ├── config.py                   # Cost-Aware Routing, pricing & guardrail policy settings
 │   ├── context.py                  # RunContextWrapper token & cost observability
+│   ├── fact_checker.py             # 5-step source re-fetch, passage extraction & claim verification
 │   ├── guardrails.py               # Configurable @input_guardrail & @output_guardrail
-│   ├── schemas.py                  # Pydantic v2 models (LeadReport, OutreachPitch, etc.)
+│   ├── schemas.py                  # Pydantic v2 models (LeadReport, VerifiedClaim, etc.)
 │   ├── agents/
 │   │   ├── company_news_agent.py   # Fast-tier web & press release researcher
 │   │   ├── tech_stack_agent.py     # Fast-tier HTML & job-board tech stack parser
@@ -67,7 +69,7 @@ B2B-Lead-Intelligence-Outreach-Agent/
 │       ├── research_engine.py      # Multi-source news aggregator, JSON-LD/SPA extractor & source scoring
 │       ├── web_scraper.py          # Website & multi-channel press scraper
 │       └── tech_parser.py          # Tech fingerprinting & careers page parser
-├── tests/                          # Comprehensive unit & integration test suite (28 tests)
+├── tests/                          # Comprehensive unit & integration test suite (31 tests)
 ├── ui/
 │   └── app.py                      # Streamlit production UI & guardrail control plane
 ├── .env.example                    # Environment variable template

@@ -22,6 +22,7 @@ from lead_agent.agents.copywriter_agent import create_copywriter_agent
 from lead_agent.agents.tech_stack_agent import create_tech_stack_agent
 from lead_agent.config import DEFAULT_SETTINGS, AgentSettings
 from lead_agent.context import LeadRunContext
+from lead_agent.fact_checker import verify_and_ground_lead_report
 from lead_agent.guardrails import (
     validate_lead_input,
     validate_lead_input_guardrail,
@@ -266,6 +267,13 @@ async def run_lead_intelligence_pipeline(
         )
     enriched_sources.sort(key=lambda s: s.composite_score, reverse=True)
     report = report.model_copy(update={"sources": enriched_sources})
+
+    # Execute 5-step fact verification (re-fetch sources, extract passages, compare claims, mark/discard unverified)
+    report = await verify_and_ground_lead_report(
+        report,
+        settings=settings,
+        run_context=run_context,
+    )
 
     # Ensure Output Guardrail validation passes
     postcheck = validate_lead_output(report, settings=settings)

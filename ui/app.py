@@ -211,6 +211,40 @@ def render_sidebar() -> AgentSettings:
                 p.strip() for p in raw_phrases.split(",") if p.strip()
             )
 
+            st.markdown("**4. 5-Step Source Fact-Checking**")
+            enable_fact_checking = st.checkbox(
+                "Re-Fetch Sources & Verify Claims Against Original Text",
+                value=True,
+                help=(
+                    "1. Links each claim to a source URL  "
+                    "2. Re-fetches the source  "
+                    "3. Extracts the matching text passage  "
+                    "4. Compares claim vs. original passage  "
+                    "5. Marks unverified claims as hypothesis or discards them."
+                ),
+            )
+            min_grounding_score = st.slider(
+                "Min. Claim Grounding Score",
+                min_value=0.10,
+                max_value=0.75,
+                value=0.25,
+                step=0.05,
+                disabled=not enable_fact_checking,
+                help="Minimum lexical/entity overlap required to consider a claim grounded in the source text.",
+            )
+            policy_label = st.radio(
+                "Unverified Claim Handling",
+                options=[
+                    "Mark as Hypothesis ([Hypothesis / Inferred])",
+                    "Discard Unverified Claims",
+                ],
+                index=0,
+                disabled=not enable_fact_checking,
+            )
+            unverified_claim_policy = (
+                "discard" if policy_label.startswith("Discard") else "mark_as_hypothesis"
+            )
+
     return AgentSettings(
         fast_model=fast_model,
         reasoning_model=reasoning_model,
@@ -225,6 +259,9 @@ def render_sidebar() -> AgentSettings:
         min_pitch_length=int(min_pitch_length),
         enable_anti_spam_check=enable_anti_spam_check,
         blocked_spam_phrases=blocked_phrases or DEFAULT_SPAM_PHRASES,
+        enable_fact_checking=enable_fact_checking,
+        min_grounding_score=float(min_grounding_score),
+        unverified_claim_policy=unverified_claim_policy,
         enforce_structured_output=enforce_structured_output,
     )
 
@@ -353,6 +390,25 @@ def render_report_tabs(report: LeadReport, context: LeadRunContext) -> None:
 
         st.markdown("**Inferred Infrastructure & Architecture Bottlenecks:**")
         st.write(report.tech_stack.inferred_infrastructure_needs)
+
+        st.divider()
+        st.markdown("### 🔬 5-Step Fact-Check & Claim Grounding Audit")
+        if report.verified_claims:
+            status_badges = {
+                "verified": "✅ Verified in Source",
+                "partially_supported": "⚠️ Partially Grounded",
+                "inferred_hypothesis": "🔍 Marked as Hypothesis",
+            }
+            for vc in report.verified_claims:
+                badge = status_badges.get(vc.verification_status, vc.verification_status)
+                cat_label = "News Trigger" if vc.category == "news_trigger" else "Pain Point"
+                st.markdown(
+                    f"- **{badge}** (`Grounding: {vc.grounding_score:.2f}` · *{cat_label}*): **{vc.claim}**  \n"
+                    f"  ↳ *Source:* [{vc.source_title or vc.source_url}]({vc.source_url})  \n"
+                    f"  ↳ *Extracted Original Passage:* `\"{vc.matched_excerpt}\"`"
+                )
+        else:
+            st.caption("Fact-checking audit disabled or no claims recorded.")
 
         st.divider()
         st.markdown("### 🔗 Verified & Scored Source Citations (Multi-Source Evaluation)")
