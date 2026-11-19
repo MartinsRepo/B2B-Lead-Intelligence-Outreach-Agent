@@ -29,6 +29,7 @@ from lead_agent.schemas import (
 from lead_agent.security import (
     SSRFBlockedError,
     SSRFCheckOutcome,
+    build_ip_pinned_url_and_headers,
     filter_safe_external_urls,
     is_ip_blocked,
     safe_http_get,
@@ -50,6 +51,7 @@ __all__ = [
     "TechStackAnalysis",
     "ValidationOutcome",
     "VerifiedClaim",
+    "build_ip_pinned_url_and_headers",
     "create_company_news_agent",
     "create_copywriter_agent",
     "create_lead_orchestrator",

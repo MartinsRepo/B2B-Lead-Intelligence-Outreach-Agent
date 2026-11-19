@@ -1,6 +1,8 @@
-"""Unit tests for SSRF protection, DNS resolution checks, redirect validation, and RSS/source filtering."""
+"""Unit tests for Fail-Closed SSRF protection, IP-pinned connections, and DNS Rebinding defense."""
 
 from __future__ import annotations
+
+import socket
 
 import httpx
 import pytest
@@ -68,12 +70,34 @@ def test_is_ip_blocked_allows_public_ips(public_ip: str) -> None:
     assert blocked is False
 
 
+def test_fail_closed_dns_policy_blocks_unresolvable_domains_by_default() -> None:
+    def failing_dns_resolver(host: str) -> list[str]:
+        raise socket.gaierror(f"NXDOMAIN for {host}")
+
+    def empty_dns_resolver(_host: str) -> list[str]:
+        return []
+
+    # Default strict_dns_failure=True must fail closed when DNS fails or returns no IPs
+    res_exception = validate_url_ssrf(
+        "https://nonexistent.invalid.example/news",
+        dns_resolver=failing_dns_resolver,
+    )
+    assert res_exception.is_safe is False
+    assert "Fail-Closed" in res_exception.reason
+
+    res_empty = validate_url_ssrf(
+        "https://empty.invalid.example/news",
+        dns_resolver=empty_dns_resolver,
+    )
+    assert res_empty.is_safe is False
+    assert "no IP addresses" in res_empty.reason
+
+
 def test_dns_resolution_blocks_domain_resolving_to_private_or_metadata_ip() -> None:
-    # Simulate DNS rebinding where a public-looking domain resolves to 169.254.169.254 or 10.0.0.8
     def fake_rebind_resolver(host: str) -> list[str]:
         if host == "rebind.example.com":
             return ["93.184.216.34", "169.254.169.254"]
-        if host == "internal- shadow.example.org":
+        if host == "internal-shadow.example.org":
             return ["10.0.0.8"]
         return ["93.184.216.34"]
 
@@ -84,13 +108,114 @@ def test_dns_resolution_blocks_domain_resolving_to_private_or_metadata_ip() -> N
     assert outcome.is_safe is False
     assert "169.254.169.254" in outcome.reason
 
-    # Input Guardrail must also block a domain whose DNS resolves to a private IP
     guardrail_outcome = validate_lead_input(
         "rebind.example.com",
         dns_resolver=fake_rebind_resolver,
     )
     assert guardrail_outcome.is_valid is False
     assert "169.254.169.254" in guardrail_outcome.reason
+
+
+async def test_simulated_toctou_dns_rebinding_prevented_by_ip_pinning() -> None:
+    """Simulate a TTL=0 DNS Rebinding attack between validation time and connection time.
+
+    Lookup #1 returns public IP '93.184.216.34'.
+    If a second DNS lookup were performed by HTTPX at connect time, Lookup #2 would return
+    AWS cloud metadata IP '169.254.169.254'.
+    Verify that `safe_http_get` pins '93.184.216.34' directly into the transport request while
+    preserving `Host: toctou.example.com` and `extensions['sni_hostname'] = 'toctou.example.com'`.
+    """
+    lookup_calls: list[str] = []
+
+    def stateful_rebinding_dns(host: str) -> list[str]:
+        lookup_calls.append(host)
+        if len(lookup_calls) == 1:
+            return ["93.184.216.34"]
+        # Second lookup flips to private metadata IP!
+        return ["169.254.169.254"]
+
+    wire_snapshots: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # Capture the exact URL, Host header, and TLS SNI extension at transport send time
+        wire_snapshots.append(
+            {
+                "host": request.url.host,
+                "port": request.url.port,
+                "path": request.url.path,
+                "query": request.url.query,
+                "headers": dict(request.headers),
+                "extensions": dict(request.extensions),
+            }
+        )
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/html"},
+            text="<html><body>Pinned Public Server Response</body></html>",
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        resp = await safe_http_get(
+            "https://toctou.example.com:8443/press?page=1",
+            client,
+            dns_resolver=stateful_rebinding_dns,
+        )
+
+    # 1. DNS was resolved exactly once (no second TOCTOU lookup)
+    assert len(lookup_calls) == 1
+    assert len(wire_snapshots) == 1
+    sent = wire_snapshots[0]
+
+    # 2. The actual network request connected to the pinned public IP (not the hostname or 169.254.169.254)
+    assert sent["host"] == "93.184.216.34"
+    assert sent["port"] == 8443
+    assert sent["path"] == "/press"
+    assert sent["query"] == b"page=1"
+
+    # 3. Host header and TLS SNI hostname remain bound to the original domain name
+    sent_headers = sent["headers"]
+    sent_ext = sent["extensions"]
+    assert isinstance(sent_headers, dict)
+    assert isinstance(sent_ext, dict)
+    assert sent_headers.get("host") == "toctou.example.com:8443"
+    assert sent_ext.get("sni_hostname") == "toctou.example.com"
+    assert sent_ext.get("pinned_ip") == "93.184.216.34"
+
+    # 4. Canonical logical URL is restored on the returned response object
+    assert str(resp.url) == "https://toctou.example.com:8443/press?page=1"
+
+
+async def test_same_domain_redirect_dns_rebinding_blocked_on_second_hop() -> None:
+    """Simulate a redirect-triggered DNS Rebinding attack on the same domain.
+
+    Hop 1 (`https://hop-rebind.example.com/step1`) resolves to public IP `93.184.216.34` and
+    returns `302 Location: /step2`.
+    Before Hop 2, the attacker flips the DNS record for `hop-rebind.example.com` to `127.0.0.1`.
+    Verify that `safe_http_get` re-validates DNS on Hop 2 and blocks the redirect!
+    """
+    hop_count = 0
+
+    def rebind_on_second_hop_dns(_host: str) -> list[str]:
+        nonlocal hop_count
+        hop_count += 1
+        if hop_count == 1:
+            return ["93.184.216.34"]
+        return ["127.0.0.1"]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/step1":
+            return httpx.Response(302, headers={"Location": "/step2"})
+        return httpx.Response(200, text="Should never reach internal /step2")
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(SSRFBlockedError, match="127.0.0.1"):
+            await safe_http_get(
+                "https://hop-rebind.example.com/step1",
+                client,
+                dns_resolver=rebind_on_second_hop_dns,
+            )
 
 
 async def test_safe_http_get_revalidates_redirect_targets_and_blocks_ssrf_redirects() -> None:
@@ -100,26 +225,27 @@ async def test_safe_http_get_revalidates_redirect_targets_and_blocks_ssrf_redire
         return ["93.184.216.34"]
 
     def handler(request: httpx.Request) -> httpx.Response:
-        url_str = str(request.url)
-        if url_str == "https://public.example.com/press":
-            # Redirect to AWS metadata IP
+        # With IP pinning active, request.url.host is '93.184.216.34' and Host header is 'public.example.com'
+        assert request.url.host == "93.184.216.34"
+        assert request.headers["Host"] == "public.example.com"
+        assert request.extensions.get("sni_hostname") == "public.example.com"
+
+        if request.url.path == "/press":
             return httpx.Response(
                 302,
                 headers={"Location": "http://169.254.169.254/latest/meta-data/"},
             )
-        if url_str == "https://public.example.com/dns-rebind-redirect":
-            # Redirect to a domain that resolves via DNS to a private 192.168.x.x IP
+        if request.url.path == "/dns-rebind-redirect":
             return httpx.Response(
                 301,
                 headers={"Location": "https://evil-redirect-target.example.com/admin"},
             )
-        if url_str == "https://public.example.com/old-news":
-            # Safe redirect to another public page
+        if request.url.path == "/old-news":
             return httpx.Response(
                 302,
                 headers={"Location": "/newsroom"},
             )
-        if url_str == "https://public.example.com/newsroom":
+        if request.url.path == "/newsroom":
             return httpx.Response(
                 200,
                 headers={"Content-Type": "text/html"},
@@ -129,7 +255,6 @@ async def test_safe_http_get_revalidates_redirect_targets_and_blocks_ssrf_redire
 
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport) as client:
-        # 1. Redirect to cloud metadata IP must be blocked before following
         with pytest.raises(SSRFBlockedError, match="169.254.169.254"):
             await safe_http_get(
                 "https://public.example.com/press",
@@ -137,7 +262,6 @@ async def test_safe_http_get_revalidates_redirect_targets_and_blocks_ssrf_redire
                 dns_resolver=fake_public_or_rebind_dns,
             )
 
-        # 2. Redirect to domain resolving to private IP 192.168.10.25 must be blocked
         with pytest.raises(SSRFBlockedError, match="192.168.10.25"):
             await safe_http_get(
                 "https://public.example.com/dns-rebind-redirect",
@@ -145,13 +269,13 @@ async def test_safe_http_get_revalidates_redirect_targets_and_blocks_ssrf_redire
                 dns_resolver=fake_public_or_rebind_dns,
             )
 
-        # 3. Legitimate redirect to public /newsroom succeeds
         ok_resp = await safe_http_get(
             "https://public.example.com/old-news",
             client,
             dns_resolver=fake_public_or_rebind_dns,
         )
         assert ok_resp.status_code == 200
+        assert str(ok_resp.url) == "https://public.example.com/newsroom"
         assert "Public Newsroom" in ok_resp.text
 
 
@@ -203,7 +327,6 @@ def test_rss_and_external_source_urls_filtered_against_ssrf() -> None:
     assert len(parsed_items) == 1
     assert parsed_items[0]["url"] == "https://acme.io/news/public-launch"
 
-    # Output Guardrail must also reject a LeadReport whose SourceCitation points to a private/reserved IP
     unsafe_report = LeadReport(
         company_name="Acme",
         target_domain="https://acme.io",
