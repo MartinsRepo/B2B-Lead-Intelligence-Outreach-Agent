@@ -1,5 +1,5 @@
 
-![intro](gallery/B2B_latest.png)
+![intro](gallery/b2b_latest.png)
 
 # B2B Lead Intelligence & Outreach Agent
 ## ✨Ideation and Implementation
