@@ -1,5 +1,5 @@
 
-![intro](gallery/b2b_latest.png)
+![intro](gallery/B2B_latest.png)
 
 # B2B Lead Intelligence & Outreach Agent
 ## ✨Ideation and Implementation
@@ -9,6 +9,9 @@
 An autonomous multi-agent B2B sales research and hyper-personalized outreach pipeline built with the **OpenAI Agents SDK**, **Pydantic v2**, **HTTPX / BeautifulSoup4**, and **Streamlit**.
 
 Given a target company domain (e.g., `bmwgroup.com/en`, `stripe.com`, `vercel.com`) or corporate URL, the agent team validates the target through configurable **Input Guardrails**, scrapes press releases and company news across multiple channels, fingerprints the web & cloud tech stack with evidence-based confidence scores, analyzes open engineering job postings for hiring signals, verifies claims against re-fetched source passages, and synthesizes an executive **Outreach & Phone Call Brief** (grounded email pitch, short-form DM icebreaker, low-friction CTA, and a 5-point live phone call cheat-sheet) with real-time token and cost telemetry.
+
+## Example Output
+![output](gallery/ExecutiveSummary.png)
 
 ---
 
