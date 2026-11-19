@@ -379,10 +379,43 @@ def render_report_tabs(report: LeadReport, context: LeadRunContext) -> None:
 
         st.divider()
         st.markdown("### 🛠️ Tech-Stack & Engineering Hiring Signals")
-        tech_badges = " ".join(
-            f"`{tech}`" for tech in report.tech_stack.detected_technologies
-        )
-        st.markdown(f"**Detected Technologies:** {tech_badges or '`None detected`'}")
+
+        if report.tech_stack.technology_signals:
+            confirmed_techs = [
+                f"`{t.name} ({int(t.confidence_score * 100)}%)`"
+                for t in report.tech_stack.technology_signals
+                if t.detection_status == "confirmed"
+            ]
+            suspected_techs = [
+                f"`{t.name} ({int(t.confidence_score * 100)}%)`"
+                for t in report.tech_stack.technology_signals
+                if t.detection_status == "suspected"
+            ]
+            st.markdown(
+                f"**✅ Confirmed Technologies (Headers / Scripts / DOM):** "
+                f"{' '.join(confirmed_techs) or '`None confirmed`'}"
+            )
+            st.markdown(
+                f"**🔍 Suspected / Inferred Technologies (Job Postings & Text Mentions):** "
+                f"{' '.join(suspected_techs) or '`None suspected`'}"
+            )
+
+            tech_rows = [
+                {
+                    "Technology": t.name,
+                    "Status": "✅ Confirmed" if t.detection_status == "confirmed" else "🔍 Suspected",
+                    "Confidence": f"{t.confidence_score:.2f} ({int(t.confidence_score * 100)}%)",
+                    "Signal Source": t.signal_source,
+                    "Detected At (UTC)": t.detected_at,
+                }
+                for t in report.tech_stack.technology_signals
+            ]
+            st.dataframe(tech_rows, width="stretch", hide_index=True)
+        else:
+            tech_badges = " ".join(
+                f"`{tech}`" for tech in report.tech_stack.detected_technologies
+            )
+            st.markdown(f"**Detected Technologies:** {tech_badges or '`None detected`'}")
 
         st.markdown("**Open Engineering Roles & Hiring Signals:**")
         for signal in report.tech_stack.hiring_signals:

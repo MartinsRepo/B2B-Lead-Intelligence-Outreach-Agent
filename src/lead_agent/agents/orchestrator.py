@@ -29,8 +29,9 @@ from lead_agent.guardrails import (
     validate_lead_output,
     validate_lead_output_guardrail,
 )
-from lead_agent.schemas import LeadReport, SourceCitation
+from lead_agent.schemas import DetectedTechnology, LeadReport, SourceCitation
 from lead_agent.tools.research_engine import evaluate_source_quality
+from lead_agent.tools.tech_parser import classify_tech_status, utc_now_iso
 
 ORCHESTRATOR_INSTRUCTIONS = """You are the Lead Orchestrator Agent controlling an autonomous B2B Lead Intelligence & Outreach workflow.
 
@@ -267,6 +268,50 @@ async def run_lead_intelligence_pipeline(
         )
     enriched_sources.sort(key=lambda s: s.composite_score, reverse=True)
     report = report.model_copy(update={"sources": enriched_sources})
+
+    # Normalize & enrich tech_stack.technology_signals (confidence, signal_source, detected_at, confirmed vs. suspected)
+    now_ts = utc_now_iso()
+    existing_signals: dict[str, DetectedTechnology] = {}
+    for sig in report.tech_stack.technology_signals:
+        norm_status = classify_tech_status(sig.confidence_score)
+        existing_signals[sig.name.lower()] = sig.model_copy(
+            update={
+                "detected_at": sig.detected_at or now_ts,
+                "detection_status": norm_status,
+            }
+        )
+
+    hiring_blob = " ".join(report.tech_stack.hiring_signals).lower()
+    for tech_name in report.tech_stack.detected_technologies:
+        key = tech_name.lower()
+        if key not in existing_signals:
+            in_jobs = key in hiring_blob
+            default_conf = 0.72 if in_jobs else 0.88
+            default_src = (
+                f"job_posting_requirement ({precheck.normalized_target}/careers)"
+                if in_jobs
+                else f"script_or_dom_asset ({precheck.normalized_target})"
+            )
+            existing_signals[key] = DetectedTechnology(
+                name=tech_name,
+                confidence_score=default_conf,
+                signal_source=default_src,
+                detected_at=now_ts,
+                detection_status=classify_tech_status(default_conf),
+            )
+
+    sorted_tech_signals = sorted(
+        existing_signals.values(),
+        key=lambda t: (t.confidence_score, t.name),
+        reverse=True,
+    )
+    report = report.model_copy(
+        update={
+            "tech_stack": report.tech_stack.model_copy(
+                update={"technology_signals": sorted_tech_signals}
+            )
+        }
+    )
 
     # Execute 5-step fact verification (re-fetch sources, extract passages, compare claims, mark/discard unverified)
     report = await verify_and_ground_lead_report(

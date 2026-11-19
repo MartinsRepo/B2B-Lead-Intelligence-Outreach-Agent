@@ -87,12 +87,50 @@ class VerifiedClaim(BaseModel):
     )
 
 
+class DetectedTechnology(BaseModel):
+    """Evidence-backed technology detection with confidence, provenance, timestamp, and status."""
+
+    name: str = Field(description="Name of the detected or inferred technology (e.g., 'Next.js', 'Kubernetes').")
+    confidence_score: float = Field(
+        default=0.85,
+        ge=0.0,
+        le=1.0,
+        description="Confidence score (0.0 to 1.0) based on signal provenance and corroboration.",
+    )
+    signal_source: str = Field(
+        default="dom_or_header_inspection",
+        description=(
+            "Exact signal source: e.g. 'http_header (server: cloudflare)', "
+            "'script_asset (js.stripe.com)', 'meta_generator', 'job_posting_requirement (/careers)', "
+            "or 'body_text_mention'."
+        ),
+    )
+    detected_at: str = Field(
+        default="",
+        description="ISO-8601 UTC timestamp when the technology signal was detected.",
+    )
+    detection_status: str = Field(
+        default="confirmed",
+        description=(
+            "Classification: 'confirmed' (sicher erkannt via HTTP headers, script/link assets, or DOM markers, "
+            "confidence >= 0.80) or 'suspected' (vermutet via job postings or body text mentions)."
+        ),
+    )
+
+
 class TechStackAnalysis(BaseModel):
     """Technical footprint and engineering hiring intelligence."""
 
     detected_technologies: list[str] = Field(
         default_factory=list,
-        description="Frontend, backend, cloud, analytics, and infrastructure tools detected.",
+        description="Summary list of all detected and inferred technologies.",
+    )
+    technology_signals: list[DetectedTechnology] = Field(
+        default_factory=list,
+        description=(
+            "Granular technology detections with confidence score, signal source, "
+            "timestamp, and confirmed vs. suspected classification."
+        ),
     )
     hiring_signals: list[str] = Field(
         default_factory=list,

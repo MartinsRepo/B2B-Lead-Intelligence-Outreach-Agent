@@ -14,17 +14,22 @@ from lead_agent.tools.tech_parser import (
     scrape_careers_and_job_postings,
 )
 
-TECH_STACK_INSTRUCTIONS = """You are the Tech-Stack & Engineering Signals Agent in a B2B lead intelligence pipeline.
-Your objective is to uncover the target company's technology stack and engineering priorities.
+TECH_STACK_INSTRUCTIONS = """You are the Evidence-Based Tech-Stack & Engineering Signals Agent in a B2B lead intelligence pipeline.
+Your objective is to uncover the target company's technology stack and engineering priorities while avoiding false positives.
 
 Workflow:
-1. Call `detect_website_tech_stack` on the target domain to identify frontend frameworks, cloud/CDN providers, analytics, and CRM integrations.
+1. Call `detect_website_tech_stack` on the target domain to identify confirmed runtime technologies (from HTTP headers, script assets, DOM attributes, and meta generators) versus suspected text mentions.
 2. Call `scrape_careers_and_job_postings` to scan their careers/jobs page for backend languages, data infrastructure, AI/ML initiatives, and open engineering roles.
-3. Synthesize:
-   - Detected technologies (frontend, backend, cloud, data, GTM tools)
-   - Hiring signals (key open engineering/product roles and demanded skills)
-   - Inferred infrastructure needs or technical bottlenecks
-   - Exact URLs inspected."""
+3. For every technology found, preserve its structured evidence in `technology_signals`:
+   - `name`: Technology name
+   - `confidence_score`: Numeric score from 0.0 to 1.0
+   - `signal_source`: Exact source (e.g., `http_header`, `script_asset`, `meta_generator`, `job_posting_requirement`, or `body_text_mention`)
+   - `detected_at`: ISO-8601 UTC timestamp (`YYYY-MM-DDTHH:MM:SSZ`)
+   - `detection_status`: `'confirmed'` (confidence >= 0.80, direct runtime proof) vs. `'suspected'` (confidence < 0.80, inferred from job postings or text mentions)
+4. Also return:
+   - `detected_technologies`: Summary list of technology names
+   - `hiring_signals`: Key open engineering/product roles and demanded skills
+   - `inferred_infrastructure_needs`: Synthesis of technical bottlenecks."""
 
 
 def create_tech_stack_agent(
@@ -39,4 +44,3 @@ def create_tech_stack_agent(
         tools=[detect_website_tech_stack, scrape_careers_and_job_postings],
         hooks=hooks,  # type: ignore[arg-type]
     )
-

@@ -14,7 +14,7 @@ flowchart TD
     ORCH -->|".as_tool() (toggleable)"| OCA["[Outreach Copywriter Agent]<br/>(gpt-6.2-sol)"]
 
     CNA --> WNS["[Multi-Source Research & Scoring Engine]<br/>(JSON-LD/SPA Hydration + RSS/Atom + Newsroom + External News RSS)"]
-    TSA --> JBP["[Job-Board & HTML Parser]<br/>(HTTPX + BS4 + Tech Fingerprinting)"]
+    TSA --> JBP["[Evidence-Based Tech-Stack & Job-Board Parser]<br/>(Confidence Score + Signal Source + UTC Timestamp + Confirmed vs. Suspected)"]
 
     WNS --> OG["[5-Step Fact-Checker, Output Guardrail & Structured Output]<br/>- Re-fetches sources, extracts passages & verifies claims<br/>- Flags unverified claims as hypothesis or discards them<br/>- Enforces Pydantic v2 schema (output_type=LeadReport)"]
     JBP --> OG
@@ -96,6 +96,24 @@ To ensure that a valid HTTP/HTTPS URL actually backs the specific claims made in
    - `partially_supported` (`⚠️ Partially Grounded`)
    - `inferred_hypothesis` (`🔍 Marked as Hypothesis`, when `grounding_score < min_grounding_score`)
 5. **Unverified Claim Policy Enforcement (`_apply_unverified_policy_to_claims`):** Depending on `settings.unverified_claim_policy` (configurable in the Streamlit sidebar), unverifiable claims are either explicitly prefixed with `"[Hypothesis / Inferred] "` or discarded from the report. Every audited claim is stored in `report.verified_claims` (`list[VerifiedClaim]`) and rendered in the UI's **5-Step Fact-Check & Claim Grounding Audit** view.
+
+---
+
+## 3d. Evidence-Based Tech-Stack Detection (`src/lead_agent/tools/tech_parser.py`)
+
+To prevent false positives (such as flagging `Kubernetes` or `AWS` as confirmed infrastructure simply because a blog paragraph mentions the word), `parse_tech_signals_detailed` and `parse_job_board_signals` record a structured `DetectedTechnology` evidence record for every signal:
+
+- **`confidence_score` (`0.00–1.00`):** Weighted by signal reliability, with a `+0.04` corroboration bonus when multiple independent signals confirm the same technology.
+- **`signal_source`:** Exact provenance of the signal:
+  - `http_header` (e.g., `server: cloudflare`, `x-vercel-id`, `x-amz-cf-id` → `0.94–0.98`)
+  - `meta_generator` (e.g., `<meta name="generator" content="Astro v4.0">` → `0.95`)
+  - `script_or_dom_asset` / `script_asset` (e.g., `/_next/static/`, `id=__NEXT_DATA__`, `js.stripe.com`, `cdn.segment.com` → `0.88–0.96`)
+  - `job_posting_requirement` (e.g., engineering role requirements on `/careers` → `0.60–0.78`)
+  - `body_text_mention` (plain text mention in page prose without runtime header/asset proof → `0.50–0.55`)
+- **`detected_at`:** ISO-8601 UTC timestamp (`YYYY-MM-DDTHH:MM:SSZ`) of the detection.
+- **`detection_status` (`confirmed` vs. `suspected`):**
+  - **`confirmed` (*sicher erkannt*, `confidence_score >= 0.80`):** Backed by direct runtime evidence (HTTP headers, script/link assets, DOM attributes, or meta generator tags).
+  - **`suspected` (*vermutet*, `confidence_score < 0.80`):** Inferred from job board requirements or plain-text prose mentions.
 
 ---
 

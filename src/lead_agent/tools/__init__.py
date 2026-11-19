@@ -9,9 +9,11 @@ from lead_agent.tools.research_engine import (
     parse_rss_or_atom_xml,
 )
 from lead_agent.tools.tech_parser import (
+    classify_tech_status,
     detect_website_tech_stack,
     detect_website_tech_stack_impl,
     parse_job_board_signals,
+    parse_tech_signals_detailed,
     parse_tech_signals_from_html,
     scrape_careers_and_job_postings,
     scrape_careers_and_job_postings_impl,
@@ -27,6 +29,7 @@ from lead_agent.tools.web_scraper import (
 
 __all__ = [
     "EvaluatedSource",
+    "classify_tech_status",
     "deduplicate_and_rank_sources",
     "detect_website_tech_stack",
     "detect_website_tech_stack_impl",
@@ -39,6 +42,7 @@ __all__ = [
     "normalize_target_url",
     "parse_job_board_signals",
     "parse_rss_or_atom_xml",
+    "parse_tech_signals_detailed",
     "parse_tech_signals_from_html",
     "scrape_careers_and_job_postings",
     "scrape_careers_and_job_postings_impl",

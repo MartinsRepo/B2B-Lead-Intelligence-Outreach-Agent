@@ -10,6 +10,7 @@ from lead_agent.tools.research_engine import (
 )
 from lead_agent.tools.tech_parser import (
     parse_job_board_signals,
+    parse_tech_signals_detailed,
     parse_tech_signals_from_html,
 )
 from lead_agent.tools.web_scraper import (
@@ -84,17 +85,53 @@ def test_parse_tech_signals_from_html_and_headers() -> None:
     assert "Vercel" in detected
     assert "Astro v4.0" in detected
 
+    # Verify detailed evidence-based classification (confirmed vs. suspected, confidence, source, timestamp)
+    detailed = parse_tech_signals_detailed(
+        SAMPLE_COMPANY_HTML,
+        headers=headers,
+        page_url="https://acmecloud.io",
+        detected_at="2026-11-19T14:00:00Z",
+    )
+    by_name = {str(item["name"]): item for item in detailed}
+
+    # Runtime header/script/meta detections must be 'confirmed' with high confidence (>= 0.88)
+    for confirmed_name in ("Cloudflare", "Vercel", "Next.js", "Stripe", "Segment", "Astro v4.0"):
+        sig = by_name[confirmed_name]
+        assert sig["detection_status"] == "confirmed"
+        assert float(sig["confidence_score"]) >= 0.88  # type: ignore[arg-type]
+        assert sig["detected_at"] == "2026-11-19T14:00:00Z"
+        assert "https://acmecloud.io" in str(sig["signal_source"])
+
+    # Plain prose mention ("processes 5M events/sec on Kubernetes") must be 'suspected', not 'confirmed'
+    k8s_sig = by_name["Kubernetes"]
+    assert k8s_sig["detection_status"] == "suspected"
+    assert float(k8s_sig["confidence_score"]) < 0.80  # type: ignore[arg-type]
+    assert "body_text_mention" in str(k8s_sig["signal_source"])
+
 
 def test_parse_job_board_signals_extracts_roles_and_skills() -> None:
-    signals = parse_job_board_signals(SAMPLE_CAREERS_HTML, "https://acmecloud.io/careers")
+    signals = parse_job_board_signals(
+        SAMPLE_CAREERS_HTML,
+        "https://acmecloud.io/careers",
+        detected_at="2026-11-19T14:00:00Z",
+    )
     skills = signals["detected_job_skills"]
     roles = signals["open_role_signals"]
+    tech_signals = signals["technology_signals"]
     assert isinstance(skills, list)
     assert isinstance(roles, list)
+    assert isinstance(tech_signals, list)
     for expected_skill in ("Python", "TypeScript", "Go", "Kafka", "Kubernetes", "Terraform", "AWS", "Snowflake", "OpenAI"):
         assert expected_skill in skills
     assert any("Staff Distributed Systems Engineer" in r for r in roles)
     assert any("Senior AI Platform Engineer" in r for r in roles)
+
+    # Verify job board tech signals carry confidence, source, timestamp, and 'suspected' status
+    first_job_sig = tech_signals[0]
+    assert first_job_sig["detection_status"] == "suspected"
+    assert 0.60 <= float(first_job_sig["confidence_score"]) < 0.80
+    assert first_job_sig["signal_source"] == "job_posting_requirement (https://acmecloud.io/careers)"
+    assert first_job_sig["detected_at"] == "2026-11-19T14:00:00Z"
 
 
 def test_js_heavy_page_recovers_json_ld_and_nextjs_hydration_state() -> None:

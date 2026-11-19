@@ -19,6 +19,7 @@ from lead_agent.guardrails import (
     validate_lead_output,
 )
 from lead_agent.schemas import (
+    DetectedTechnology,
     LeadReport,
     OutreachPitch,
     SourceCitation,
@@ -30,6 +31,7 @@ __all__ = [
     "AgentSettings",
     "AgentUsageRecord",
     "DEFAULT_SETTINGS",
+    "DetectedTechnology",
     "LeadReport",
     "LeadRunContext",
     "ModelPricing",

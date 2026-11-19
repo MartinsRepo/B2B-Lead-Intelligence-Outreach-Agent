@@ -1,9 +1,10 @@
-"""Tech-stack and job-board HTML parsing tools for the Tech-Stack Agent."""
+"""Evidence-based tech-stack and job-board HTML parsing tools for the Tech-Stack Agent."""
 
 from __future__ import annotations
 
 import json
 import re
+from datetime import UTC, datetime
 from urllib.parse import urljoin, urlparse
 
 import httpx
@@ -24,29 +25,53 @@ from lead_agent.config import DEFAULT_SETTINGS
 from lead_agent.context import LeadRunContext
 from lead_agent.tools.web_scraper import DEFAULT_HEADERS, normalize_target_url
 
-# Signatures for HTML / script / header tech-stack fingerprinting
-TECH_SIGNATURES: dict[str, tuple[str, ...]] = {
-    "Next.js": ("_next/static", "__NEXT_DATA__", "next-head"),
-    "React": ("react-dom", "data-reactroot", "__REACT"),
-    "Vue.js": ("vue.runtime", "vue.global", "data-v-"),
-    "Angular": ("ng-version", "angular.min.js"),
-    "Tailwind CSS": ("tailwindcss", "--tw-"),
-    "TypeScript": ("typescript", ".ts"),
-    "GraphQL": ("graphql", "__typename", "apollo"),
-    "Stripe": ("js.stripe.com", "stripe-js"),
-    "Segment": ("cdn.segment.com", "analytics.load"),
-    "HubSpot": ("js.hs-scripts.com", "hs-analytics", "hubspot"),
-    "Salesforce": ("salesforce", "pardot", "sfdc"),
-    "Google Tag Manager": ("googletagmanager.com/gtm.js",),
-    "Intercom": ("widget.intercom.io", "Intercom("),
-    "Cloudflare": ("cf-ray", "cloudflare", "__cf_bm"),
-    "AWS CloudFront / S3": ("cloudfront.net", "amazonaws.com", "x-amz-"),
-    "Vercel": ("x-vercel-id", "vercel.app"),
-    "Sentry": ("browser.sentry-cdn.com", "sentry.io"),
-    "Datadog": ("datadoghq", "dd-rum"),
-    "Snowflake": ("snowflake",),
-    "Kubernetes": ("kubernetes", "k8s", "eks", "gke"),
-}
+CONFIRMED_THRESHOLD = 0.80
+
+# 1. High-Confidence HTTP Header Rules (Confirmed: 0.94 - 0.98)
+HEADER_TECH_RULES: tuple[tuple[str, str, str, float], ...] = (
+    # (Technology Name, Header Key Substring, Header Value Pattern, Confidence)
+    ("Cloudflare", "server", r"cloudflare", 0.98),
+    ("Cloudflare", "cf-ray", r".+", 0.98),
+    ("Vercel", "x-vercel-id", r".+", 0.98),
+    ("Vercel", "server", r"vercel", 0.97),
+    ("AWS CloudFront / S3", "x-amz-cf-id", r".+", 0.97),
+    ("AWS CloudFront / S3", "x-amz-request-id", r".+", 0.96),
+    ("AWS CloudFront / S3", "via", r"cloudfront\.net", 0.96),
+    ("AWS CloudFront / S3", "server", r"amazons3|awselb", 0.96),
+    ("Next.js", "x-powered-by", r"next\.js", 0.97),
+    ("Express / Node.js", "x-powered-by", r"express", 0.94),
+)
+
+# 2. High-Confidence Script / Link / DOM Asset Rules (Confirmed: 0.90 - 0.96)
+ASSET_AND_DOM_RULES: tuple[tuple[str, str, tuple[str, ...], float], ...] = (
+    # (Technology Name, Signal Category, Patterns in <script src>/<link href>/DOM attrs, Confidence)
+    ("Next.js", "script_or_dom_asset", ("/_next/static/", "__next_data__", "next-route-announcer"), 0.96),
+    ("React", "script_or_dom_asset", ("react-dom", "data-reactroot", "__react"), 0.92),
+    ("Vue.js", "script_or_dom_asset", ("vue.runtime", "vue.global", "data-v-"), 0.92),
+    ("Angular", "script_or_dom_asset", ("ng-version", "angular.min.js"), 0.93),
+    ("Tailwind CSS", "stylesheet_or_dom_class", ("tailwindcss", "--tw-"), 0.88),
+    ("Stripe", "script_asset", ("js.stripe.com", "stripe-js"), 0.96),
+    ("Segment", "script_asset", ("cdn.segment.com", "analytics.load"), 0.94),
+    ("HubSpot", "script_asset", ("js.hs-scripts.com", "hs-analytics", "js.hsforms.net"), 0.95),
+    ("Google Tag Manager", "script_asset", ("googletagmanager.com/gtm.js",), 0.96),
+    ("Intercom", "script_asset", ("widget.intercom.io",), 0.95),
+    ("Sentry", "script_asset", ("browser.sentry-cdn.com", "sentry.io"), 0.94),
+    ("Datadog", "script_asset", ("datadoghq-browser-agent", "dd-rum"), 0.94),
+    ("Cloudflare", "script_asset", ("challenges.cloudflare.com", "static.cloudflareinsights.com"), 0.94),
+    ("AWS CloudFront / S3", "script_or_media_asset", ("cloudfront.net/", "s3.amazonaws.com/"), 0.90),
+)
+
+# 3. Low-Confidence Body Text Mention Rules (Suspected: 0.45 - 0.58)
+# Prevents false positives when terms like "Kubernetes" or "AWS" only appear in prose/blog text
+TEXT_MENTION_TECH_KEYWORDS: tuple[tuple[str, str, float], ...] = (
+    ("Kubernetes", r"\b(kubernetes|k8s|eks|gke)\b", 0.52),
+    ("Snowflake", r"\bsnowflake\b", 0.52),
+    ("AWS CloudFront / S3", r"\b(amazonaws\.com|aws cloud|amazon web services)\b", 0.55),
+    ("GraphQL", r"\b(graphql|apollo client)\b", 0.55),
+    ("Salesforce", r"\b(salesforce|pardot)\b", 0.52),
+    ("TypeScript", r"\btypescript\b", 0.50),
+    ("Datadog", r"\bdatadog\b", 0.50),
+)
 
 JOB_TECH_KEYWORDS: tuple[str, ...] = (
     "Python",
@@ -80,43 +105,134 @@ JOB_TECH_KEYWORDS: tuple[str, ...] = (
 )
 
 
-def parse_tech_signals_from_html(
-    html: str, headers: dict[str, str] | None = None
-) -> list[str]:
-    """Identify frontend, cloud, analytics, and infrastructure technologies from HTML & headers."""
-    combined_headers = " ".join(
-        f"{k}: {v}" for k, v in (headers or {}).items()
-    ).lower()
-    lower_html = html.lower()
+def utc_now_iso() -> str:
+    """Return current UTC timestamp in ISO-8601 format (YYYY-MM-DDTHH:MM:SSZ)."""
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    detected: list[str] = []
-    for tech_name, patterns in TECH_SIGNATURES.items():
-        for pat in patterns:
-            pat_lower = pat.lower()
-            if pat_lower in lower_html or pat_lower in combined_headers:
-                detected.append(tech_name)
-                break
 
+def classify_tech_status(confidence_score: float) -> str:
+    """Distinguish between 'confirmed' (sicher erkannt) and 'suspected' (vermutet)."""
+    return "confirmed" if confidence_score >= CONFIRMED_THRESHOLD else "suspected"
+
+
+def parse_tech_signals_detailed(
+    html: str,
+    headers: dict[str, str] | None = None,
+    page_url: str = "",
+    detected_at: str | None = None,
+) -> list[dict[str, object]]:
+    """Extract evidence-backed technology detections with confidence, signal source, timestamp, and status."""
+    timestamp = detected_at or utc_now_iso()
+    norm_headers = {k.lower(): str(v) for k, v in (headers or {}).items()}
     soup = BeautifulSoup(html, "html.parser")
+
+    # Map: tech_name -> dict with highest confidence and aggregated signal sources
+    detections: dict[str, dict[str, object]] = {}
+
+    def _record_signal(name: str, confidence: float, source_desc: str) -> None:
+        loc_suffix = f" @ {page_url}" if page_url else ""
+        full_source = f"{source_desc}{loc_suffix}"
+        existing = detections.get(name)
+        if existing is None:
+            detections[name] = {
+                "name": name,
+                "confidence_score": round(confidence, 2),
+                "signal_sources": [full_source],
+                "detected_at": timestamp,
+            }
+        else:
+            sources_list: list[str] = list(existing["signal_sources"])  # type: ignore[arg-type]
+            if full_source not in sources_list:
+                sources_list.append(full_source)
+            # Corroboration bonus (+0.04) when multiple distinct signals confirm the same technology
+            base_conf = max(float(existing["confidence_score"]), confidence)  # type: ignore[arg-type]
+            boosted = min(0.99, base_conf + (0.04 if len(sources_list) > 1 else 0.0))
+            existing["confidence_score"] = round(boosted, 2)
+            existing["signal_sources"] = sources_list
+
+    # 1. Inspect HTTP response headers (high confidence: confirmed)
+    for tech_name, hdr_key, val_regex, conf in HEADER_TECH_RULES:
+        if hdr_key in norm_headers and re.search(val_regex, norm_headers[hdr_key], re.I):
+            hdr_val = norm_headers[hdr_key][:40]
+            _record_signal(tech_name, conf, f"http_header ({hdr_key}: {hdr_val})")
+
+    # 2. Inspect <meta name="generator"> (high confidence: confirmed)
     generator = soup.find("meta", attrs={"name": re.compile(r"^generator$", re.I)})
     if generator and generator.get("content"):
         gen_val = str(generator["content"]).strip()
-        if gen_val and gen_val not in detected:
-            detected.append(gen_val)
+        if gen_val:
+            _record_signal(gen_val, 0.95, f"meta_generator ({gen_val})")
 
-    return sorted(set(detected))
+    # 3. Inspect <script>, <link>, <style>, and DOM structural attributes (high confidence: confirmed)
+    asset_blobs: list[str] = []
+    for s_tag in soup.find_all("script"):
+        if s_tag.get("src"):
+            asset_blobs.append(str(s_tag["src"]))
+        if s_tag.get("id"):
+            asset_blobs.append(f"id={s_tag['id']}")
+        inline_code = (s_tag.string or "")[:600]
+        if inline_code:
+            asset_blobs.append(inline_code)
+
+    for l_tag in soup.find_all(["link", "style"]):
+        if l_tag.get("href"):
+            asset_blobs.append(str(l_tag["href"]))
+        inline_style = (l_tag.string or "")[:600]
+        if inline_style:
+            asset_blobs.append(inline_style)
+
+    # Also check root/element attributes like data-reactroot, ng-version, data-v-*
+    raw_opening_tags = " ".join(re.findall(r"<[a-zA-Z0-9-]+[^>]*>", html[:15000]))
+    combined_asset_surface = f"{' '.join(asset_blobs)} {raw_opening_tags}".lower()
+
+    for tech_name, category, patterns, conf in ASSET_AND_DOM_RULES:
+        for pat in patterns:
+            if pat.lower() in combined_asset_surface:
+                _record_signal(tech_name, conf, f"{category} (matched '{pat}')")
+                break
+
+    # 4. Inspect plain body text mentions (low confidence: suspected, unless already confirmed above)
+    visible_text = " ".join(soup.get_text(" ", strip=True).split())
+    for tech_name, text_regex, low_conf in TEXT_MENTION_TECH_KEYWORDS:
+        if tech_name not in detections and re.search(text_regex, visible_text, re.I):
+            _record_signal(tech_name, low_conf, "body_text_mention")
+
+    # Finalize serialized records sorted by confidence descending
+    results: list[dict[str, object]] = []
+    for item in detections.values():
+        conf_val = float(item["confidence_score"])  # type: ignore[arg-type]
+        srcs = list(item["signal_sources"])  # type: ignore[arg-type]
+        results.append(
+            {
+                "name": str(item["name"]),
+                "confidence_score": conf_val,
+                "signal_source": "; ".join(srcs[:2]),
+                "detected_at": str(item["detected_at"]),
+                "detection_status": classify_tech_status(conf_val),
+            }
+        )
+
+    results.sort(key=lambda r: (float(r["confidence_score"]), str(r["name"])), reverse=True)  # type: ignore[arg-type]
+    return results
 
 
-def parse_job_board_signals(html: str, page_url: str) -> dict[str, object]:
-    """Extract open role titles and mentioned engineering skills from a careers/job HTML page."""
+def parse_tech_signals_from_html(
+    html: str, headers: dict[str, str] | None = None
+) -> list[str]:
+    """Return sorted list of detected technology names (backward-compatible helper)."""
+    detailed = parse_tech_signals_detailed(html, headers=headers)
+    return sorted({str(d["name"]) for d in detailed})
+
+
+def parse_job_board_signals(
+    html: str,
+    page_url: str,
+    detected_at: str | None = None,
+) -> dict[str, object]:
+    """Extract open role titles and suspected engineering tech signals from a careers/job HTML page."""
+    timestamp = detected_at or utc_now_iso()
     soup = BeautifulSoup(html, "html.parser")
     text_content = " ".join(soup.get_text(" ", strip=True).split())
-
-    matched_skills: list[str] = []
-    for kw in JOB_TECH_KEYWORDS:
-        pattern = rf"\b{re.escape(kw)}\b"
-        if re.search(pattern, text_content, flags=re.IGNORECASE):
-            matched_skills.append(kw)
 
     role_headings: list[str] = []
     role_regex = re.compile(
@@ -130,9 +246,34 @@ def parse_job_board_signals(html: str, page_url: str) -> dict[str, object]:
             if len(role_headings) >= 10:
                 break
 
+    has_engineering_roles = len(role_headings) > 0
+    matched_skills: list[str] = []
+    job_tech_signals: list[dict[str, object]] = []
+
+    for kw in JOB_TECH_KEYWORDS:
+        pattern = rf"\b{re.escape(kw)}\b"
+        matches = re.findall(pattern, text_content, flags=re.IGNORECASE)
+        if matches:
+            matched_skills.append(kw)
+            # Job board mentions indicate probable internal usage ('suspected' until confirmed by runtime assets)
+            base_conf = 0.72 if has_engineering_roles else 0.60
+            freq_bonus = min(0.06, (len(matches) - 1) * 0.02)
+            conf = round(min(0.78, base_conf + freq_bonus), 2)
+            job_tech_signals.append(
+                {
+                    "name": kw,
+                    "confidence_score": conf,
+                    "signal_source": f"job_posting_requirement ({page_url})",
+                    "detected_at": timestamp,
+                    "detection_status": classify_tech_status(conf),
+                }
+            )
+
     return {
         "careers_url": page_url,
+        "detected_at": timestamp,
         "detected_job_skills": matched_skills,
+        "technology_signals": job_tech_signals,
         "open_role_signals": role_headings,
         "excerpt": text_content[:2000],
     }
@@ -141,25 +282,46 @@ def parse_job_board_signals(html: str, page_url: str) -> dict[str, object]:
 async def detect_website_tech_stack_impl(
     url: str, timeout: float = DEFAULT_SETTINGS.http_timeout_seconds
 ) -> dict[str, object]:
-    """Fetch a target website and fingerprint its web, analytics, and cloud stack."""
+    """Fetch a target website and fingerprint its web, analytics, and cloud stack with confidence scores."""
     normalized_url = normalize_target_url(url)
+    timestamp = utc_now_iso()
     async with httpx.AsyncClient(
         headers=DEFAULT_HEADERS, follow_redirects=True, timeout=timeout
     ) as client:
         try:
             response = await client.get(normalized_url)
             headers_dict = {k.lower(): v for k, v in response.headers.items()}
-            detected = parse_tech_signals_from_html(response.text, headers_dict)
+            final_url = str(response.url)
+            detailed = parse_tech_signals_detailed(
+                response.text,
+                headers=headers_dict,
+                page_url=final_url,
+                detected_at=timestamp,
+            )
+            confirmed_names = [
+                str(d["name"]) for d in detailed if d["detection_status"] == "confirmed"
+            ]
+            suspected_names = [
+                str(d["name"]) for d in detailed if d["detection_status"] == "suspected"
+            ]
             return {
-                "url": str(response.url),
-                "detected_technologies": detected,
+                "url": final_url,
+                "detected_at": timestamp,
+                "detected_technologies": [str(d["name"]) for d in detailed],
+                "confirmed_technologies": confirmed_names,
+                "suspected_technologies": suspected_names,
+                "technology_signals": detailed,
                 "server_header": headers_dict.get("server", "unknown"),
                 "powered_by": headers_dict.get("x-powered-by", "unknown"),
             }
         except httpx.HTTPError as exc:
             return {
                 "url": normalized_url,
+                "detected_at": timestamp,
                 "detected_technologies": [],
+                "confirmed_technologies": [],
+                "suspected_technologies": [],
+                "technology_signals": [],
                 "error": f"Tech detection HTTP warning: {exc!s}",
             }
 
@@ -194,7 +356,9 @@ async def scrape_careers_and_job_postings_impl(
         except httpx.HTTPError as exc:
             return {
                 "careers_url": normalized_url,
+                "detected_at": utc_now_iso(),
                 "detected_job_skills": [],
+                "technology_signals": [],
                 "open_role_signals": [],
                 "error": f"Careers scan warning: {exc!s}",
             }
@@ -204,7 +368,7 @@ async def scrape_careers_and_job_postings_impl(
 async def detect_website_tech_stack(
     ctx: RunContextWrapper[LeadRunContext], url: str
 ) -> str:
-    """Inspect HTTP headers, script tags, and HTML metadata to detect a company's tech stack.
+    """Inspect HTTP headers, script tags, and HTML metadata to detect a company's tech stack with confidence scores.
 
     Args:
         url: Target company domain or URL.
@@ -219,7 +383,7 @@ async def detect_website_tech_stack(
 async def scrape_careers_and_job_postings(
     ctx: RunContextWrapper[LeadRunContext], url: str
 ) -> str:
-    """Scan the company's careers/job pages to infer backend stack and hiring priorities.
+    """Scan the company's careers/job pages to infer backend stack and hiring priorities with confidence scores.
 
     Args:
         url: Target company domain or URL.
@@ -228,4 +392,3 @@ async def scrape_careers_and_job_postings(
         ctx.context.log_tool_event(f"Tech-Stack Agent -> scrape_careers_and_job_postings({url})")
     result = await scrape_careers_and_job_postings_impl(url)
     return json.dumps(result, ensure_ascii=False)
-
