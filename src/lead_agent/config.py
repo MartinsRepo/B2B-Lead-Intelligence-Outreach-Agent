@@ -72,6 +72,7 @@ class AgentSettings:
     # 3. Output Guardrail Configuration
     enable_output_guardrail: bool = True
     min_sources_required: int = 1
+    min_source_credibility: float = 0.50
     min_pitch_length: int = 40
     enable_anti_spam_check: bool = True
     blocked_spam_phrases: tuple[str, ...] = DEFAULT_SPAM_PHRASES

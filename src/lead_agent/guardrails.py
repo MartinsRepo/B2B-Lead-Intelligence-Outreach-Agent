@@ -186,6 +186,16 @@ def validate_lead_output(
                 normalized_target=report.target_domain,
                 reason=f"Output Guardrail failed: Invalid source URL '{src.url}'.",
             )
+        if src.composite_score < active_settings.min_source_credibility:
+            return ValidationOutcome(
+                is_valid=False,
+                normalized_target=report.target_domain,
+                reason=(
+                    f"Output Guardrail failed: Source '{src.url}' quality score "
+                    f"({src.composite_score:.2f}) is below minimum threshold "
+                    f"({active_settings.min_source_credibility:.2f})."
+                ),
+            )
 
     pitch_text = report.outreach.hyper_personalized_pitch.strip()
     min_len = max(1, active_settings.min_pitch_length)

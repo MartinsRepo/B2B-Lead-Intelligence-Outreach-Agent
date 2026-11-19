@@ -13,7 +13,7 @@ flowchart TD
     ORCH -->|".as_tool() (toggleable)"| TSA["[Tech-Stack Agent]<br/>(gpt-6-luna)"]
     ORCH -->|".as_tool() (toggleable)"| OCA["[Outreach Copywriter Agent]<br/>(gpt-6.2-sol)"]
 
-    CNA --> WNS["[Web / News Scraper]<br/>(HTTPX + BeautifulSoup4)"]
+    CNA --> WNS["[Multi-Source Research & Scoring Engine]<br/>(JSON-LD/SPA Hydration + RSS/Atom + Newsroom + External News RSS)"]
     TSA --> JBP["[Job-Board & HTML Parser]<br/>(HTTPX + BS4 + Tech Fingerprinting)"]
 
     WNS --> OG["[Configurable Output Guardrail & Structured Output]<br/>- Enforces min. verified HTTP/HTTPS source citations<br/>- Validates min. pitch length & customizable anti-spam filter<br/>- Enforces Pydantic v2 schema (output_type=LeadReport)"]
@@ -60,8 +60,27 @@ All guardrails and `.as_tool()` sub-agent delegations are dynamically configurab
 ### 3. Output Guardrail (`@output_guardrail`)
 - **`enable_output_guardrail` (`bool`, default `True`):** Validates the structured `LeadReport` before returning it to the UI or downstream CRM.
 - **`min_sources_required` (`int`, default `1`):** Enforces a minimum count of verified `http://` or `https://` citations in `report.sources`.
+- **`min_source_credibility` (`float`, default `0.50`):** Rejects reports whose sources fall below the configured composite quality threshold.
 - **`min_pitch_length` (`int`, default `40`):** Ensures `hyper_personalized_pitch` meets minimum character length thresholds.
 - **`enable_anti_spam_check` (`bool`, default `True`) & `blocked_spam_phrases` (`tuple[str, ...]`):** Scans generated outreach copy against a customizable list of prohibited spam clichés.
+
+---
+
+## 3b. Multi-Source Research & Source Evaluation Engine (`src/lead_agent/tools/research_engine.py`)
+
+To overcome the limitations of simple static HTML scraping on modern B2B websites, the research pipeline combines four discovery channels and a deterministic source scoring algorithm:
+
+1. **JS-Heavy Website & SPA State Recovery:**
+   - Parses `<script type="application/ld+json">` (`NewsArticle`, `Organization`, `WebPage`) and Next.js `__NEXT_DATA__` hydration state payloads to recover dynamic headlines, article bodies, and publication timestamps even when static `<body>` tags are minimal.
+   - Automatically triggers a headless reader fallback (`r.jina.ai`) when static + hydrated HTML contains fewer than 250 characters.
+2. **Multi-Channel Press & News Aggregation:**
+   - **Auto-Discovered RSS / Atom Feeds:** Detects `<link rel="alternate" type="application/rss+xml|application/atom+xml">` and probes `/feed`, `/rss.xml`, `/blog/rss.xml`.
+   - **Deep Corporate Newsroom Crawler:** Crawls `/newsroom`, `/press`, `/news`, `/blog` and follows discovered press links from the homepage.
+   - **External News & Press Wires (Google News RSS):** Queries external press coverage and Tier-1 news wires (`prnewswire.com`, `businesswire.com`, `reuters.com`, `techcrunch.com`, `handelsblatt.com`, etc.).
+3. **Deterministic Source Quality Scoring (`evaluate_source_quality`):**
+   - **`credibility_score` (`0.0–1.0`, weight 45%):** Evaluates domain authority and provenance (first-party official newsroom `0.96`, Tier-1 press wires `0.92`, first-party domain `0.90`, verified external news `0.85`).
+   - **`relevance_score` (`0.0–1.0`, weight 40%):** Measures company mention presence, B2B trigger keyword density (`launch`, `partnership`, `funding`, `quarterly`, `enterprise`, `ai`, `cloud`), and snippet depth.
+   - **`composite_score` (`0.0–1.0`, includes 15% recency weight):** Ranks and deduplicates sources best-first before synthesis and Output Guardrail validation.
 
 ---
 

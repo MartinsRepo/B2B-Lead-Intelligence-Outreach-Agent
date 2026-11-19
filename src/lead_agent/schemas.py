@@ -6,16 +6,45 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class SourceCitation(BaseModel):
-    """Verified external source citation grounding the lead intelligence report."""
+    """Verified external source citation with deterministic provenance and relevance scoring."""
 
     title: str = Field(
-        description="Title or clear description of the cited webpage, job posting, or article."
+        description="Title or clear description of the cited webpage, press release, job posting, or article."
     )
     url: str = Field(
-        description="Full HTTP/HTTPS URL of the source (press release, company page, job board)."
+        description="Full HTTP/HTTPS URL of the source (newsroom, press wire, RSS article, job board)."
     )
     snippet: str = Field(
         description="Concise factual quote or takeaway extracted from this source."
+    )
+    source_type: str = Field(
+        default="corporate_website",
+        description=(
+            "Category of the source: 'official_newsroom', 'press_release', 'external_news', "
+            "'rss_feed', 'careers_portal', or 'corporate_website'."
+        ),
+    )
+    published_date: str = Field(
+        default="",
+        description="Publication or last-updated date (YYYY-MM-DD) if detected, else empty string.",
+    )
+    credibility_score: float = Field(
+        default=0.85,
+        ge=0.0,
+        le=1.0,
+        description="Domain authority and provenance score from 0.0 to 1.0.",
+    )
+    relevance_score: float = Field(
+        default=0.85,
+        ge=0.0,
+        le=1.0,
+        description="B2B trigger density and company relevance score from 0.0 to 1.0.",
+    )
+    composite_score: float = Field(
+        default=0.85,
+        ge=0.0,
+        le=1.0,
+        description="Weighted overall source quality score (credibility + relevance + recency) from 0.0 to 1.0.",
     )
 
     @field_validator("url")
@@ -44,25 +73,25 @@ class TechStackAnalysis(BaseModel):
 
 
 class OutreachPitch(BaseModel):
-    """B2B outreach deliverables including a Before/After comparison for LinkedIn showcases."""
+    """B2B outreach deliverables including a Baseline vs. Multi-Agent Grounded comparison."""
 
     subject_line: str = Field(
         description="High-converting, specific B2B cold email subject line."
     )
     generic_ai_message: str = Field(
         description=(
-            "The 'Before' baseline: a typical generic, superficial AI outreach message "
-            "full of buzzwords to contrast against our multi-agent research."
+            "Standard single-prompt baseline: a typical generic, superficial AI outreach message "
+            "without live press or tech-stack grounding."
         )
     )
     hyper_personalized_pitch: str = Field(
         description=(
-            "The 'After' result: a concise, executive-ready outreach pitch referencing "
+            "Multi-agent grounded result: a concise, executive-ready outreach pitch referencing "
             "concrete press triggers, detected tech stack, and inferred pain points."
         )
     )
     icebreaker_hook: str = Field(
-        description="Short 1-2 sentence LinkedIn connection request note (<300 characters)."
+        description="Short 1-2 sentence direct message icebreaker note (<300 characters)."
     )
     call_to_action: str = Field(
         description="Low-friction, value-first Call to Action (CTA)."
@@ -73,7 +102,7 @@ class LeadReport(BaseModel):
     """Deterministic top-level output schema enforced via output_type=LeadReport."""
 
     company_name: str = Field(description="Official name of the target company.")
-    target_domain: str = Field(description="Normalized primary domain or LinkedIn URL analyzed.")
+    target_domain: str = Field(description="Normalized primary domain or corporate URL analyzed.")
     industry: str = Field(description="Primary B2B industry or vertical.")
     executive_summary: str = Field(
         description="2-3 sentence strategic overview of the company's current market position."
@@ -90,10 +119,9 @@ class LeadReport(BaseModel):
         description="Structured tech-stack and hiring signal analysis."
     )
     outreach: OutreachPitch = Field(
-        description="Tailored outreach pitch and Before/After comparison."
+        description="Tailored outreach pitch and Baseline vs. Multi-Agent comparison."
     )
     sources: list[SourceCitation] = Field(
         min_length=1,
-        description="Verified source citations supporting the findings in this report.",
+        description="Verified, quality-scored source citations supporting the findings in this report.",
     )
-

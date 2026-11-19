@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+from lead_agent.tools.research_engine import (
+    deduplicate_and_rank_sources,
+    evaluate_source_quality,
+    extract_json_ld_and_hydration_state,
+    parse_rss_or_atom_xml,
+)
 from lead_agent.tools.tech_parser import (
     parse_job_board_signals,
     parse_tech_signals_from_html,
@@ -89,4 +95,93 @@ def test_parse_job_board_signals_extracts_roles_and_skills() -> None:
         assert expected_skill in skills
     assert any("Staff Distributed Systems Engineer" in r for r in roles)
     assert any("Senior AI Platform Engineer" in r for r in roles)
+
+
+def test_js_heavy_page_recovers_json_ld_and_nextjs_hydration_state() -> None:
+    js_spa_html = """
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <title>Acme SPA</title>
+        <link rel="alternate" type="application/rss+xml" href="/blog/rss.xml" />
+        <script type="application/ld+json">
+          {
+            "@context": "https://schema.org",
+            "@type": "NewsArticle",
+            "headline": "Acme Launches Autonomous Cloud Mesh for Enterprise AI",
+            "description": "Acme announces a 40% latency reduction across multi-region Kubernetes clusters.",
+            "datePublished": "2026-10-15T08:00:00Z"
+          }
+        </script>
+      </head>
+      <body>
+        <div id="__next"></div>
+        <script id="__NEXT_DATA__" type="application/json">
+          {
+            "props": {
+              "pageProps": {
+                "hero": {
+                  "headline": "Next-Gen Enterprise Cloud Mesh Architecture",
+                  "summary": "Zero-trust service mesh engineered for high-throughput financial workloads."
+                }
+              }
+            }
+          }
+        </script>
+      </body>
+    </html>
+    """
+    state = extract_json_ld_and_hydration_state(js_spa_html)
+    assert len(state["json_ld_items"]) == 1  # type: ignore[arg-type]
+    assert state["published_dates"] == ["2026-10-15"]
+
+    page_data = extract_clean_page_data(js_spa_html, "https://acme.io")
+    assert page_data["published_date"] == "2026-10-15"
+    assert page_data["discovered_rss_feeds"] == ["https://acme.io/blog/rss.xml"]
+    assert "Acme Launches Autonomous Cloud Mesh for Enterprise AI" in page_data["headings"]  # type: ignore[operator]
+    assert "Zero-trust service mesh" in str(page_data["body_excerpt"])
+
+
+def test_parse_rss_xml_and_evaluate_source_quality() -> None:
+    rss_xml = """<?xml version="1.0" encoding="UTF-8" ?>
+    <rss version="2.0">
+      <channel>
+        <title>Acme Newsroom</title>
+        <item>
+          <title>Acme Announces Series C Funding and Enterprise AI Platform Launch</title>
+          <link>https://acme.io/news/series-c-launch</link>
+          <description>Acme raised $80M to expand its cloud data platform across Europe and North America.</description>
+          <pubDate>Wed, 14 Oct 2026 09:30:00 GMT</pubDate>
+        </item>
+      </channel>
+    </rss>
+    """
+    items = parse_rss_or_atom_xml(rss_xml)
+    assert len(items) == 1
+    assert items[0]["published_date"] == "2026-10-14"
+
+    official_src = evaluate_source_quality(
+        title=items[0]["title"],
+        url=items[0]["url"],
+        snippet=items[0]["snippet"],
+        target_domain="acme.io",
+        source_type="official_newsroom",
+        published_date=items[0]["published_date"],
+    )
+    generic_src = evaluate_source_quality(
+        title="Random Directory Listing",
+        url="http://unknown-directory.org/list",
+        snippet="Short note.",
+        target_domain="acme.io",
+        source_type="external_news",
+    )
+
+    assert official_src.credibility_score > generic_src.credibility_score
+    assert official_src.relevance_score > generic_src.relevance_score
+    assert official_src.composite_score >= 0.90
+
+    ranked = deduplicate_and_rank_sources([generic_src, official_src], min_score=0.60)
+    assert len(ranked) == 1
+    assert ranked[0].url == "https://acme.io/news/series-c-launch"
+
 

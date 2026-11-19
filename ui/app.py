@@ -179,6 +179,15 @@ def render_sidebar() -> AgentSettings:
                 step=1,
                 disabled=not enable_output_guardrail,
             )
+            min_source_credibility = st.slider(
+                "Min. Source Quality Score",
+                min_value=0.0,
+                max_value=0.95,
+                value=0.50,
+                step=0.05,
+                disabled=not enable_output_guardrail,
+                help="Rejects reports containing low-credibility or off-topic source citations.",
+            )
             min_pitch_length = st.slider(
                 "Min. Pitch Length (chars)",
                 min_value=20,
@@ -212,6 +221,7 @@ def render_sidebar() -> AgentSettings:
         enable_copywriter_agent=enable_copywriter_agent,
         enable_output_guardrail=enable_output_guardrail,
         min_sources_required=int(min_sources_required),
+        min_source_credibility=float(min_source_credibility),
         min_pitch_length=int(min_pitch_length),
         enable_anti_spam_check=enable_anti_spam_check,
         blocked_spam_phrases=blocked_phrases or DEFAULT_SPAM_PHRASES,
@@ -345,10 +355,14 @@ def render_report_tabs(report: LeadReport, context: LeadRunContext) -> None:
         st.write(report.tech_stack.inferred_infrastructure_needs)
 
         st.divider()
-        st.markdown("### 🔗 Verified Source Citations (Output Guardrail Checked)")
+        st.markdown("### 🔗 Verified & Scored Source Citations (Multi-Source Evaluation)")
         for idx, src in enumerate(report.sources, start=1):
+            date_tag = f" · 📅 `{src.published_date}`" if src.published_date else ""
             st.markdown(
                 f"{idx}. **[{src.title}]({src.url})**  \n"
+                f"   🏷️ `{src.source_type}`{date_tag} · "
+                f"⭐ **Quality Score:** `{src.composite_score:.2f}` "
+                f"*(Credibility: `{src.credibility_score:.2f}` · Relevance: `{src.relevance_score:.2f}`)*  \n"
                 f"   *\"{src.snippet}\"*"
             )
 

@@ -28,7 +28,8 @@ from lead_agent.guardrails import (
     validate_lead_output,
     validate_lead_output_guardrail,
 )
-from lead_agent.schemas import LeadReport
+from lead_agent.schemas import LeadReport, SourceCitation
+from lead_agent.tools.research_engine import evaluate_source_quality
 
 ORCHESTRATOR_INSTRUCTIONS = """You are the Lead Orchestrator Agent controlling an autonomous B2B Lead Intelligence & Outreach workflow.
 
@@ -239,6 +240,32 @@ async def run_lead_intelligence_pipeline(
     elapsed = time.perf_counter() - start_ts
 
     report: LeadReport = result.final_output_as(LeadReport)
+
+    # Deterministically evaluate & rank every source citation in LeadReport
+    enriched_sources: list[SourceCitation] = []
+    for src in report.sources:
+        evaluated = evaluate_source_quality(
+            title=src.title,
+            url=src.url,
+            snippet=src.snippet,
+            target_domain=precheck.normalized_target,
+            source_type=src.source_type,
+            published_date=src.published_date,
+        )
+        enriched_sources.append(
+            SourceCitation(
+                title=evaluated.title,
+                url=evaluated.url,
+                snippet=evaluated.snippet,
+                source_type=evaluated.source_type,
+                published_date=evaluated.published_date,
+                credibility_score=evaluated.credibility_score,
+                relevance_score=evaluated.relevance_score,
+                composite_score=evaluated.composite_score,
+            )
+        )
+    enriched_sources.sort(key=lambda s: s.composite_score, reverse=True)
+    report = report.model_copy(update={"sources": enriched_sources})
 
     # Ensure Output Guardrail validation passes
     postcheck = validate_lead_output(report, settings=settings)

@@ -10,10 +10,11 @@ Given a target company domain (e.g., `bmwgroup.com/en`, `stripe.com`, `vercel.co
 
 - **Multi-Agent Orchestration (`.as_tool()` Pattern):** Uses the OpenAI Agents SDK to coordinate three specialized sub-agents (`Company & News Agent`, `Tech-Stack Agent`, and `Outreach Copywriter Agent`) under a central `Lead Orchestrator`.
 - **Cost-Aware Model Routing:** Routes high-volume HTML scraping and job-board extraction tasks to a fast, low-cost model tier (`gpt-6-luna` / `gpt-4o-mini`) while reserving a high-reasoning model tier (`gpt-6.2-sol` / `gpt-4o`) for orchestration and executive copywriting.
+- **Multi-Source Research & Source Quality Scoring:** Combines corporate newsroom subpage crawling, RSS/Atom feed auto-discovery, JSON-LD & Next.js (`__NEXT_DATA__`) hydration extraction (with automatic JS reader fallback for SPAs), and external Google News RSS search—scoring every source on **Credibility (45%)**, **Relevance (40%)**, and **Recency (15%)**.
 - **Configurable Guardrails & Policy Control Plane:**
   - *Input Guardrail:* Validates domain/corporate URL format and blocks malformed inputs or private/localhost IPs (SSRF protection) before any LLM tokens are spent.
   - *Modular `.as_tool()` Toggles:* Enable or disable individual sub-agents on the fly from the Streamlit sidebar.
-  - *Output Guardrail:* Enforces configurable minimum verified HTTP/HTTPS source citations, minimum pitch length, and customizable anti-spam phrase filtering.
+  - *Output Guardrail:* Enforces configurable minimum verified HTTP/HTTPS source citations, minimum source quality scores, minimum pitch length, and customizable anti-spam phrase filtering.
 - **Deterministic Structured Outputs:** Enforces strict JSON schemas using Pydantic v2 (`output_type=LeadReport`), eliminating unstructured Markdown chaos for reliable UI rendering and downstream CRM export.
 - **Real-Time Observability:** Tracks per-agent latency, `input_tokens`, `output_tokens`, API request counts, and USD cost savings via `RunContextWrapper` and `RequestUsage` in a live 4-column telemetry card.
 
@@ -30,7 +31,7 @@ flowchart TD
     ORCH -->|".as_tool() (toggleable)"| TSA["[Tech-Stack Agent]<br/>(gpt-6-luna)"]
     ORCH -->|".as_tool() (toggleable)"| OCA["[Outreach Copywriter Agent]<br/>(gpt-6.2-sol)"]
 
-    CNA --> WNS["[Web / News Scraper]<br/>(HTTPX + BeautifulSoup4)"]
+    CNA --> WNS["[Multi-Source Research & Scoring Engine]<br/>(JSON-LD/SPA Hydration + RSS/Atom + Newsroom + External News RSS)"]
     TSA --> JBP["[Job-Board & HTML Parser]<br/>(HTTPX + BS4 + Tech Fingerprinting)"]
 
     WNS --> OG["[Configurable Output Guardrail & Structured Output]<br/>- Enforces min. verified HTTP/HTTPS source citations<br/>- Validates min. pitch length & customizable anti-spam filter<br/>- Enforces Pydantic v2 schema (output_type=LeadReport)"]
@@ -63,9 +64,10 @@ B2B-Lead-Intelligence-Outreach-Agent/
 │   │   ├── copywriter_agent.py     # Reasoning-tier B2B outreach copywriter
 │   │   └── orchestrator.py         # Lead Orchestrator wiring sub-agents via .as_tool()
 │   └── tools/
-│       ├── web_scraper.py          # HTTPX + BeautifulSoup4 website & news scraper
+│       ├── research_engine.py      # Multi-source news aggregator, JSON-LD/SPA extractor & source scoring
+│       ├── web_scraper.py          # Website & multi-channel press scraper
 │       └── tech_parser.py          # Tech fingerprinting & careers page parser
-├── tests/                          # Comprehensive unit & integration test suite (26 tests)
+├── tests/                          # Comprehensive unit & integration test suite (28 tests)
 ├── ui/
 │   └── app.py                      # Streamlit production UI & guardrail control plane
 ├── .env.example                    # Environment variable template
