@@ -16,7 +16,10 @@ SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from lead_agent.agents.orchestrator import run_lead_intelligence_pipeline  # noqa: E402
+from lead_agent.agents.orchestrator import (  # noqa: E402
+    resolve_live_model_name,
+    run_lead_intelligence_pipeline,
+)
 from lead_agent.config import DEFAULT_SPAM_PHRASES, AgentSettings  # noqa: E402
 from lead_agent.context import LeadRunContext  # noqa: E402
 from lead_agent.schemas import LeadReport  # noqa: E402
@@ -103,29 +106,56 @@ def render_sidebar() -> AgentSettings:
                 os.environ["OPENAI_API_KEY"] = api_key_input
 
         st.markdown("### 🧠 Cost-Aware Model Routing")
-        preset = st.selectbox(
-            "Model Routing Preset",
-            options=[
-                "Architecture Spec (gpt-6-luna / gpt-6.2-sol)",
-                "OpenAI Production (gpt-4o-mini / gpt-4o)",
-                "Custom Model IDs",
-            ],
-            index=0,
+
+        fast_model_options = [
+            "gpt-4o-mini",
+            "gpt-4.1-mini",
+            "gpt-4.1-nano",
+            "o4-mini",
+            "gpt-6-luna",
+        ]
+        reasoning_model_options = [
+            "gpt-4o",
+            "gpt-4.1",
+            "o3-mini",
+            "o3",
+            "gpt-6.2-sol",
+        ]
+
+        env_fast = resolve_live_model_name(os.getenv("FAST_MODEL", "gpt-4o-mini"))
+        env_reasoning = resolve_live_model_name(os.getenv("REASONING_MODEL", "gpt-4o"))
+
+        default_fast_idx = (
+            fast_model_options.index(env_fast) if env_fast in fast_model_options else 0
+        )
+        default_reasoning_idx = (
+            reasoning_model_options.index(env_reasoning)
+            if env_reasoning in reasoning_model_options
+            else 0
         )
 
-        if preset.startswith("Architecture Spec"):
-            fast_model = "gpt-6-luna"
-            reasoning_model = "gpt-6.2-sol"
-        elif preset.startswith("OpenAI Production"):
-            fast_model = "gpt-4o-mini"
-            reasoning_model = "gpt-4o"
-        else:
-            fast_model = st.text_input("Fast Extraction Model", value="gpt-6-luna")
-            reasoning_model = st.text_input("Reasoning / Copy Model", value="gpt-6.2-sol")
+        fast_model = st.selectbox(
+            "⚡ Fast Extraction Model",
+            options=fast_model_options,
+            index=default_fast_idx,
+            help="Used by high-volume web scraping and HTML/job-board parsing sub-agents.",
+        )
+        reasoning_model = st.selectbox(
+            "🧠 Reasoning & Copywriter Model",
+            options=reasoning_model_options,
+            index=default_reasoning_idx,
+            help="Used by the Lead Orchestrator and Outreach Copywriter sub-agent.",
+        )
 
-        st.caption(
-            f"**Scraping & Tech Agents:** `{fast_model}` ($0.15 / 1M in)\n\n"
-            f"**Orchestrator & Copywriter:** `{reasoning_model}` ($2.50 / 1M in)"
+        active_fast = resolve_live_model_name(fast_model)
+        active_reasoning = resolve_live_model_name(reasoning_model)
+
+        st.markdown(
+            "**Active Agent Models in Use:**\n"
+            f"- **Company & News Agent:** `{active_fast}` *($0.15 / 1M in)*\n"
+            f"- **Tech-Stack Agent:** `{active_fast}` *($0.15 / 1M in)*\n"
+            f"- **Outreach Copywriter:** `{active_reasoning}` *($2.50 / 1M in)*\n"
+            f"- **Lead Orchestrator:** `{active_reasoning}` *($2.50 / 1M in)*"
         )
 
         st.divider()
@@ -246,8 +276,8 @@ def render_sidebar() -> AgentSettings:
             )
 
     return AgentSettings(
-        fast_model=fast_model,
-        reasoning_model=reasoning_model,
+        fast_model=active_fast,
+        reasoning_model=active_reasoning,
         enable_input_guardrail=enable_input_guardrail,
         block_private_ips=block_private_ips,
         enable_company_news_agent=enable_company_news_agent,
@@ -343,7 +373,7 @@ def render_report_tabs(report: LeadReport, context: LeadRunContext) -> None:
         with col_left:
             st.markdown("#### ✅ Multi-Agent Grounded Outreach Pitch")
             st.caption(
-                "Synthesized by the Outreach Copywriter Agent (`gpt-6.2-sol`) using verified news triggers, "
+                f"Synthesized by the Outreach Copywriter Agent (`{context.settings.reasoning_model}`) using verified news triggers, "
                 "job-board hiring signals, and detected tech-stack bottlenecks."
             )
             st.success(report.outreach.hyper_personalized_pitch)
