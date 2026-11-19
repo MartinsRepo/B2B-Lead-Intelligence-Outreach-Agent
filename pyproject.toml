@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Autonomous multi-agent B2B lead intelligence and outreach pipeline built with the OpenAI Agents SDK, Cost-Aware Model Routing, Pydantic structured outputs, guardrails, and real-time token/cost tracking."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = { text = "APACHE 2.0" }
 authors = [
     { name = "B2B Lead Intelligence Team" }
 ]

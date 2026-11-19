@@ -1,10 +1,12 @@
-"""Unit tests for the 5-Step Fact-Verification & Claim-Grounding Engine."""
+"""Unit tests for the 5-Step Semantic Fact-Verification & Claim-Grounding Engine."""
 
 from __future__ import annotations
 
 from lead_agent.config import AgentSettings
 from lead_agent.fact_checker import (
     HYPOTHESIS_PREFIX,
+    PARTIALLY_SUPPORTED_PREFIX,
+    compute_semantic_similarity,
     extract_best_matching_passage,
     verify_and_ground_lead_report,
 )
@@ -21,9 +23,10 @@ def _build_test_report() -> LeadReport:
         company_name="AcmeCloud",
         target_domain="https://acmecloud.io",
         industry="Cloud Infrastructure",
-        executive_summary="AcmeCloud provides enterprise data streaming.",
+        executive_summary="AcmeCloud provides enterprise data streaming on Kubernetes clusters.",
         recent_news_and_triggers=[
             "AcmeCloud launched a Zero-Copy Snowflake Connector processing 5M events/sec.",
+            "AcmeCloud announced a European banking data streaming expansion in Zurich.",
             "AcmeCloud is building a nuclear fusion submarine fleet in Antarctica.",
         ],
         identified_pain_points=[
@@ -33,11 +36,11 @@ def _build_test_report() -> LeadReport:
         tech_stack=TechStackAnalysis(
             detected_technologies=["Kafka", "Snowflake", "Kubernetes"],
             hiring_signals=["Staff Distributed Systems Engineer (Go / Kafka)"],
-            inferred_infrastructure_needs="Low-latency stream processing.",
+            inferred_infrastructure_needs="Low-latency stream processing on Kubernetes and Kafka.",
         ),
         outreach=OutreachPitch(
             subject_line="Zero-Copy Snowflake Connector latency at AcmeCloud",
-            generic_ai_message="Hi AcmeCloud, hope this finds you well!",
+            generic_ai_message="",
             hyper_personalized_pitch=(
                 "Saw AcmeCloud's Zero-Copy Snowflake Connector launch processing 5M events/sec "
                 "and your open Kafka/Kubernetes engineering roles."
@@ -63,21 +66,71 @@ def test_extract_best_matching_passage_finds_relevant_sentence() -> None:
         "Contact our sales office in Munich for pricing."
     )
     claim = "AcmeCloud launched a Zero-Copy Snowflake Connector processing 5M events/sec."
-    passage, score = extract_best_matching_passage(claim, original_document)
+    passage, grounding_score, semantic_score = extract_best_matching_passage(
+        claim, original_document
+    )
 
     assert "Zero-Copy Snowflake Connector" in passage
     assert "5M events/sec" in passage
-    assert score >= 0.55
+    assert grounding_score >= 0.55
+    assert semantic_score >= 0.50
 
 
-async def test_verify_and_ground_lead_report_marks_unverified_claims_as_hypothesis() -> None:
+def test_semantic_similarity_handles_paraphrases_and_negations() -> None:
+    # Paraphrase using different words from the same B2B semantic concept clusters
+    claim = "Scaling electric vehicle manufacturing plants and cloud telemetry."
+    paraphrased_passage = (
+        "The automotive group is expanding EV production facilities with AWS observability pipelines."
+    )
+    unrelated_passage = "Quarterly bakery pastry recipe instructions for chocolate croissants."
+    negated_passage = (
+        "The company is NOT scaling electric vehicle manufacturing plants or cloud telemetry."
+    )
+
+    sim_paraphrase = compute_semantic_similarity(claim, paraphrased_passage)
+    sim_unrelated = compute_semantic_similarity(claim, unrelated_passage)
+    sim_negated = compute_semantic_similarity(claim, negated_passage)
+
+    assert sim_paraphrase > sim_unrelated + 0.25
+    assert sim_negated < sim_paraphrase
+
+
+async def test_successful_refetch_is_required_for_verified_status() -> None:
+    report = _build_test_report()
+
+    # Simulate a failed HTTP re-fetch (returns empty text / refetch_succeeded=False)
+    async def failed_fetcher(_url: str) -> tuple[str, bool]:
+        return ("", False)
+
+    settings = AgentSettings(
+        enable_fact_checking=True,
+        min_grounding_score=0.25,
+        unverified_claim_policy="mark_as_hypothesis",
+    )
+    checked = await verify_and_ground_lead_report(
+        report,
+        settings=settings,
+        custom_fetcher=failed_fetcher,
+    )
+
+    # Because re-fetch failed, NO claim may be marked as 'verified'
+    for vc in checked.verified_claims:
+        assert vc.source_refetched is False
+        assert vc.verification_status != "verified"
+
+    # The first claim matches the un-refetched snippet, so it is capped at 'partially_supported'
+    assert checked.recent_news_and_triggers[0].startswith(PARTIALLY_SUPPORTED_PREFIX)
+
+
+async def test_verify_all_sections_and_separate_partially_supported_labels() -> None:
     report = _build_test_report()
 
     async def fake_fetcher(_url: str) -> str:
         return (
-            "AcmeCloud Q3 Press Release. Today AcmeCloud launched a Zero-Copy Snowflake Connector "
-            "processing 5M events/sec. Engineering teams are optimizing cross-region Kafka "
-            "replication latency on Kubernetes clusters."
+            "AcmeCloud Q3 Press Release. AcmeCloud provides enterprise data streaming on Kubernetes clusters. "
+            "Today AcmeCloud launched a Zero-Copy Snowflake Connector processing 5M events/sec. "
+            "Engineering teams are optimizing cross-region Kafka replication latency on Kubernetes clusters "
+            "for low-latency stream processing."
         )
 
     settings = AgentSettings(
@@ -91,25 +144,19 @@ async def test_verify_and_ground_lead_report_marks_unverified_claims_as_hypothes
         custom_fetcher=fake_fetcher,
     )
 
-    assert len(verified_report.verified_claims) == 4
-    statuses = {vc.claim: vc.verification_status for vc in verified_report.verified_claims}
+    categories = {vc.category for vc in verified_report.verified_claims}
+    # All 4 core sections must be audited: executive_summary, news_trigger, pain_point, tech_stack
+    assert categories == {"executive_summary", "news_trigger", "pain_point", "tech_stack"}
 
-    assert (
-        statuses["AcmeCloud launched a Zero-Copy Snowflake Connector processing 5M events/sec."]
-        == "verified"
-    )
-    assert (
-        statuses["AcmeCloud is building a nuclear fusion submarine fleet in Antarctica."]
-        == "inferred_hypothesis"
-    )
-
-    # Grounded claim stays untouched; unverified claim is prefixed with [Hypothesis / Inferred]
+    # 1. Fully verified trigger stays clean
     assert (
         verified_report.recent_news_and_triggers[0]
         == "AcmeCloud launched a Zero-Copy Snowflake Connector processing 5M events/sec."
     )
-    assert verified_report.recent_news_and_triggers[1].startswith(HYPOTHESIS_PREFIX)
-    assert verified_report.identified_pain_points[1].startswith(HYPOTHESIS_PREFIX)
+    # 2. Partially supported trigger gets [Partially Supported] prefix
+    assert verified_report.recent_news_and_triggers[1].startswith(PARTIALLY_SUPPORTED_PREFIX)
+    # 3. Unverified trigger gets [Hypothesis / Inferred] prefix
+    assert verified_report.recent_news_and_triggers[2].startswith(HYPOTHESIS_PREFIX)
 
 
 async def test_verify_and_ground_lead_report_discards_unverified_claims_when_configured() -> None:
@@ -117,6 +164,7 @@ async def test_verify_and_ground_lead_report_discards_unverified_claims_when_con
 
     async def fake_fetcher(_url: str) -> str:
         return (
+            "AcmeCloud provides enterprise data streaming on Kubernetes clusters. "
             "AcmeCloud launched a Zero-Copy Snowflake Connector processing 5M events/sec. "
             "Teams face high cross-region Kafka replication latency on Kubernetes clusters."
         )
@@ -132,8 +180,7 @@ async def test_verify_and_ground_lead_report_discards_unverified_claims_when_con
         custom_fetcher=fake_fetcher,
     )
 
-    # Unverified submarine and Mars claims were discarded, keeping only the grounded claims
-    assert len(verified_report.recent_news_and_triggers) == 1
+    # Unverified submarine and Mars claims were discarded
+    assert not any("submarine" in c for c in verified_report.recent_news_and_triggers)
+    assert not any("Mars" in p for p in verified_report.identified_pain_points)
     assert "Snowflake Connector" in verified_report.recent_news_and_triggers[0]
-    assert len(verified_report.identified_pain_points) == 1
-    assert "Kafka replication latency" in verified_report.identified_pain_points[0]

@@ -84,18 +84,24 @@ To overcome the limitations of simple static HTML scraping on modern B2B website
 
 ---
 
-## 3c. 5-Step Fact-Verification & Claim-Grounding Engine (`src/lead_agent/fact_checker.py`)
+## 3c. 5-Step Semantic Fact-Verification & Claim-Grounding Engine (`src/lead_agent/fact_checker.py`)
 
-To ensure that a valid HTTP/HTTPS URL actually backs the specific claims made in the report (rather than merely pointing to a generic homepage), [`src/lead_agent/fact_checker.py`](../src/lead_agent/fact_checker.py) executes a 5-step verification pipeline before the final `LeadReport` is returned:
+To ensure that a valid HTTP/HTTPS URL actually backs the specific claims made across the entire report (rather than merely pointing to a generic homepage), [`src/lead_agent/fact_checker.py`](../src/lead_agent/fact_checker.py) executes a 5-step verification pipeline before the final `LeadReport` is returned:
 
-1. **Claim-to-Source Mapping (`select_best_source_for_claim`):** Links every key statement in `recent_news_and_triggers` and `identified_pain_points` to its best-matching cited `SourceCitation`.
-2. **Source Re-Fetching (`refetch_sources_corpus`):** Re-fetches the cited URLs (`httpx.AsyncClient` + `extract_clean_page_data`) to inspect the full original document text, headings, and JSON-LD metadata.
-3. **Passage Extraction (`extract_best_matching_passage`):** Splits the original source text into sliding sentence windows and extracts the specific passage (`matched_excerpt`) with the highest lexical, stem, and high-signal entity/numeric overlap.
-4. **Claim-vs-Passage Comparison (`classify_verification_status`):** Computes a `grounding_score` (`0.00–1.00`) and classifies each claim as:
-   - `verified` (`✅ Verified in Source`)
-   - `partially_supported` (`⚠️ Partially Grounded`)
-   - `inferred_hypothesis` (`🔍 Marked as Hypothesis`, when `grounding_score < min_grounding_score`)
-5. **Unverified Claim Policy Enforcement (`_apply_unverified_policy_to_claims`):** Depending on `settings.unverified_claim_policy` (configurable in the Streamlit sidebar), unverifiable claims are either explicitly prefixed with `"[Hypothesis / Inferred] "` or discarded from the report. Every audited claim is stored in `report.verified_claims` (`list[VerifiedClaim]`) and rendered in the UI's **5-Step Fact-Check & Claim Grounding Audit** view.
+1. **Full-Report Claim Coverage (`verify_and_ground_lead_report`):** Audits all four core claim categories in `LeadReport`:
+   - `executive_summary` (`category="executive_summary"`)
+   - `recent_news_and_triggers` (`category="news_trigger"`)
+   - `identified_pain_points` (`category="pain_point"`)
+   - `tech_stack` (`category="tech_stack"`, covering both `inferred_infrastructure_needs` and detected technology stack claims)
+2. **Live Source Re-Fetching as a Hard Prerequisite (`refetch_sources_corpus` & `RefetchedSourceDocument`):** Re-fetches the cited URLs (`httpx.AsyncClient` + `extract_clean_page_data`) and records `source_refetched: bool`. **A claim can never achieve `verification_status="verified"` unless the live HTTP re-fetch succeeded (`source_refetched=True`)**; if a source cannot be re-fetched, the claim is capped at `partially_supported` or `inferred_hypothesis`.
+3. **Passage Extraction & Semantic Verification (`extract_best_matching_passage` & `compute_semantic_similarity`):** Splits the re-fetched document into sliding sentence windows and evaluates both lexical/stem coverage and **semantic similarity** (B2B domain semantic concept clusters for synonym/paraphrase matching, character 3-gram cosine similarity, and **negation/contradiction penalty detection**).
+4. **3-Tier Classification (`classify_verification_status`):** Computes `grounding_score` and `semantic_score` (`0.00–1.00`) and classifies each claim as:
+   - `verified` (`✅ Verified in Re-Fetched Source`, requires `source_refetched=True` and strong lexical + semantic coverage)
+   - `partially_supported` (`⚠️ Partially Supported`)
+   - `inferred_hypothesis` (`🔍 Unverified / Hypothesis`, when below `min_grounding_score`)
+5. **Separate Labeling & Policy Enforcement (`_apply_unverified_policy_to_claims` & `annotate_statement_by_status`):**
+   - Partially supported claims are explicitly prefixed with `"[Partially Supported] "`.
+   - Unverifiable claims (`inferred_hypothesis`) are either prefixed with `"[Hypothesis / Inferred] "` or discarded (`settings.unverified_claim_policy = "discard"`). Every audited claim is stored in `report.verified_claims` (`list[VerifiedClaim]`) and rendered in the UI's **5-Step Fact-Check & Semantic Claim Grounding Audit** view.
 
 ---
 

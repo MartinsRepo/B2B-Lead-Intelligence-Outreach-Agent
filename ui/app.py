@@ -437,18 +437,26 @@ def render_report_tabs(report: LeadReport, context: LeadRunContext) -> None:
         st.write(report.tech_stack.inferred_infrastructure_needs)
 
         st.divider()
-        st.markdown("### 🔬 5-Step Fact-Check & Claim Grounding Audit")
+        st.markdown("### 🔬 5-Step Fact-Check & Semantic Claim Grounding Audit")
         if report.verified_claims:
             status_badges = {
-                "verified": "✅ Verified in Source",
-                "partially_supported": "⚠️ Partially Grounded",
-                "inferred_hypothesis": "🔍 Marked as Hypothesis",
+                "verified": "✅ Verified in Re-Fetched Source",
+                "partially_supported": "⚠️ Partially Supported ([Partially Supported])",
+                "inferred_hypothesis": "🔍 Unverified ([Hypothesis / Inferred])",
+            }
+            category_labels = {
+                "executive_summary": "Executive Summary",
+                "news_trigger": "News Trigger",
+                "pain_point": "Pain Point",
+                "tech_stack": "Tech-Stack & Infrastructure",
             }
             for vc in report.verified_claims:
                 badge = status_badges.get(vc.verification_status, vc.verification_status)
-                cat_label = "News Trigger" if vc.category == "news_trigger" else "Pain Point"
+                cat_label = category_labels.get(vc.category, vc.category)
+                refetch_badge = "🌐 Re-Fetch: OK" if vc.source_refetched else "⚠️ Re-Fetch: Failed (Unverified)"
                 st.markdown(
-                    f"- **{badge}** (`Grounding: {vc.grounding_score:.2f}` · *{cat_label}*): **{vc.claim}**  \n"
+                    f"- **{badge}** (`Grounding: {vc.grounding_score:.2f}` · "
+                    f"`Semantic: {vc.semantic_score:.2f}` · `{refetch_badge}` · *{cat_label}*): **{vc.claim}**  \n"
                     f"  ↳ *Source:* [{vc.source_title or vc.source_url}]({vc.source_url})  \n"
                     f"  ↳ *Extracted Original Passage:* `\"{vc.matched_excerpt}\"`"
                 )

@@ -57,12 +57,12 @@ class SourceCitation(BaseModel):
 
 
 class VerifiedClaim(BaseModel):
-    """Fact-checked claim mapped to a re-fetched source passage and grounding score."""
+    """Fact-checked claim mapped to a re-fetched source passage, semantic score, and grounding status."""
 
-    claim: str = Field(description="The factual claim or pain point statement being verified.")
+    claim: str = Field(description="The factual claim, summary, tech-stack statement, or pain point being verified.")
     category: str = Field(
         default="news_trigger",
-        description="Claim category: 'news_trigger' or 'pain_point'.",
+        description="Claim category: 'executive_summary', 'news_trigger', 'pain_point', or 'tech_stack'.",
     )
     source_title: str = Field(
         default="",
@@ -71,15 +71,25 @@ class VerifiedClaim(BaseModel):
     source_url: str = Field(
         description="HTTP/HTTPS URL of the source against which the claim was verified."
     )
+    source_refetched: bool = Field(
+        default=True,
+        description="True only if the source URL was successfully re-fetched over HTTP during verification.",
+    )
     matched_excerpt: str = Field(
         default="",
         description="Relevant passage extracted from the re-fetched original source text.",
+    )
+    semantic_score: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Semantic concept, n-gram, and negation-aware similarity score (0.0 to 1.0).",
     )
     grounding_score: float = Field(
         default=0.0,
         ge=0.0,
         le=1.0,
-        description="Lexical and high-signal entity support score (0.0 to 1.0) against the source passage.",
+        description="Combined lexical, entity, and semantic support score (0.0 to 1.0) against the source passage.",
     )
     verification_status: str = Field(
         default="verified",

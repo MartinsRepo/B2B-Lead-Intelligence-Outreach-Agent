@@ -14,7 +14,7 @@ Given a target company domain (e.g., `bmwgroup.com/en`, `stripe.com`, `vercel.co
 - **Multi-Agent Orchestration (`.as_tool()` Pattern):** Uses the OpenAI Agents SDK to coordinate three specialized sub-agents (`Company & News Agent`, `Tech-Stack Agent`, and `Outreach Copywriter Agent`) under a central `Lead Orchestrator`.
 - **Cost-Aware Model Routing:** Routes high-volume HTML scraping and job-board extraction tasks to a fast, low-cost model tier (`gpt-6-luna` / `gpt-4o-mini`) while reserving a high-reasoning model tier (`gpt-6.2-sol` / `gpt-4o`) for orchestration and executive copywriting.
 - **Multi-Source Research & Source Quality Scoring:** Combines corporate newsroom subpage crawling, RSS/Atom feed auto-discovery, JSON-LD & Next.js (`__NEXT_DATA__`) hydration extraction (with automatic JS reader fallback for SPAs), and external Google News RSS search—scoring every source on **Credibility (45%)**, **Relevance (40%)**, and **Recency (15%)**.
-- **5-Step Fact-Verification & Claim-Grounding Engine:** Goes beyond URL validation by (1) linking each claim to a source reference, (2) re-fetching the original source text, (3) extracting the matching passage, (4) scoring claim-to-passage overlap (`grounding_score`), and (5) either labeling unsupported claims as `[Hypothesis / Inferred]` or discarding them.
+- **5-Step Semantic Fact-Verification & Claim-Grounding Engine:** Audits all core statements (`executive_summary`, `recent_news_and_triggers`, `identified_pain_points`, and `tech_stack`) by (1) linking each claim to a source reference, (2) requiring a **successful live HTTP re-fetch (`source_refetched=True`)** for full verification, (3) extracting the matching passage, (4) scoring both lexical coverage and **semantic similarity** (B2B concept clusters, character 3-gram cosine similarity, and negation/contradiction detection), and (5) separately labeling partially supported statements (`[Partially Supported]`) versus unverifiable hypotheses (`[Hypothesis / Inferred]` or discarding them).
 - **Evidence-Based Tech-Stack Detection:** Eliminates keyword false positives by recording a `DetectedTechnology` profile for every signal—including **`confidence_score` (`0.00–1.00`)**, **`signal_source`** (`http_header`, `script_asset`, `meta_generator`, `job_posting_requirement`, `body_text_mention`), **`detected_at` UTC timestamp**, and an explicit distinction between **`confirmed`** (*sicher erkannt*, `>= 0.80`) and **`suspected`** (*vermutet*, `< 0.80`).
 - **Configurable Guardrails & Policy Control Plane:**
   - *Input Guardrail:* Validates domain/corporate URL format and blocks malformed inputs or private/localhost IPs (SSRF protection) before any LLM tokens are spent.
@@ -57,7 +57,7 @@ B2B-Lead-Intelligence-Outreach-Agent/
 │       ├── research_engine.py      # Multi-source news aggregator, JSON-LD/SPA extractor & source scoring
 │       ├── web_scraper.py          # Website & multi-channel press scraper
 │       └── tech_parser.py          # Tech fingerprinting & careers page parser
-├── tests/                          # Comprehensive unit & integration test suite (31 tests)
+├── tests/                          # Comprehensive unit & integration test suite (33 tests)
 ├── ui/
 │   └── app.py                      # Streamlit production UI & guardrail control plane
 ├── .env.example                    # Environment variable template
