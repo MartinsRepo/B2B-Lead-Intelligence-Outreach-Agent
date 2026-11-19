@@ -26,6 +26,14 @@ from lead_agent.schemas import (
     TechStackAnalysis,
     VerifiedClaim,
 )
+from lead_agent.security import (
+    SSRFBlockedError,
+    SSRFCheckOutcome,
+    filter_safe_external_urls,
+    is_ip_blocked,
+    safe_http_get,
+    validate_url_ssrf,
+)
 
 __all__ = [
     "AgentSettings",
@@ -36,6 +44,8 @@ __all__ = [
     "LeadRunContext",
     "ModelPricing",
     "OutreachPitch",
+    "SSRFBlockedError",
+    "SSRFCheckOutcome",
     "SourceCitation",
     "TechStackAnalysis",
     "ValidationOutcome",
@@ -45,8 +55,12 @@ __all__ = [
     "create_lead_orchestrator",
     "create_tech_stack_agent",
     "extract_best_matching_passage",
+    "filter_safe_external_urls",
+    "is_ip_blocked",
     "run_lead_intelligence_pipeline",
+    "safe_http_get",
     "validate_lead_input",
     "validate_lead_output",
+    "validate_url_ssrf",
     "verify_and_ground_lead_report",
 ]

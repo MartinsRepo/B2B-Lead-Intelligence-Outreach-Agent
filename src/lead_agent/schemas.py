@@ -26,13 +26,39 @@ class SourceCitation(BaseModel):
     )
     published_date: str = Field(
         default="",
-        description="Publication or last-updated date (YYYY-MM-DD) if detected, else empty string.",
+        description="Original publication date (YYYY-MM-DD) if detected, else empty string.",
+    )
+    updated_date: str = Field(
+        default="",
+        description="Last-modified / updated date (YYYY-MM-DD) if detected, else empty string.",
+    )
+    age_days: int | None = Field(
+        default=None,
+        description="Actual age of the news item or source in days since publication.",
+    )
+    recency_score: float = Field(
+        default=0.55,
+        ge=0.0,
+        le=1.0,
+        description="Temporal freshness score (0.0 to 1.0) calculated from actual age in days.",
     )
     credibility_score: float = Field(
         default=0.85,
         ge=0.0,
         le=1.0,
         description="Domain authority and provenance score from 0.0 to 1.0.",
+    )
+    source_quality_score: float = Field(
+        default=0.85,
+        ge=0.0,
+        le=1.0,
+        description="Quellenqualität: intrinsic authority and temporal freshness of the source (0.0 to 1.0).",
+    )
+    statement_quality_score: float = Field(
+        default=0.85,
+        ge=0.0,
+        le=1.0,
+        description="Aussagequalität: trigger density, factual specificity, and entity relevance of the statement (0.0 to 1.0).",
     )
     relevance_score: float = Field(
         default=0.85,
@@ -44,7 +70,7 @@ class SourceCitation(BaseModel):
         default=0.85,
         ge=0.0,
         le=1.0,
-        description="Weighted overall source quality score (credibility + relevance + recency) from 0.0 to 1.0.",
+        description="Weighted overall quality score combining source_quality_score and statement_quality_score (0.0 to 1.0).",
     )
 
     @field_validator("url")

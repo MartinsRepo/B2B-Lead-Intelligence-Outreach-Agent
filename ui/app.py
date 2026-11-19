@@ -466,12 +466,21 @@ def render_report_tabs(report: LeadReport, context: LeadRunContext) -> None:
         st.divider()
         st.markdown("### 🔗 Verified & Scored Source Citations (Multi-Source Evaluation)")
         for idx, src in enumerate(report.sources, start=1):
-            date_tag = f" · 📅 `{src.published_date}`" if src.published_date else ""
+            date_parts: list[str] = []
+            if src.published_date:
+                date_parts.append(f"📅 Published: `{src.published_date}`")
+            if src.updated_date:
+                date_parts.append(f"🔄 Updated: `{src.updated_date}`")
+            if src.age_days is not None:
+                date_parts.append(f"⏱️ Age: `{src.age_days}d` (Recency: `{src.recency_score:.2f}`)")
+            date_tag = f" · {' · '.join(date_parts)}" if date_parts else ""
             st.markdown(
                 f"{idx}. **[{src.title}]({src.url})**  \n"
-                f"   🏷️ `{src.source_type}`{date_tag} · "
-                f"⭐ **Quality Score:** `{src.composite_score:.2f}` "
-                f"*(Credibility: `{src.credibility_score:.2f}` · Relevance: `{src.relevance_score:.2f}`)*  \n"
+                f"   🏷️ `{src.source_type}`{date_tag}  \n"
+                f"   🏛️ **Source Quality (Quellenqualität):** `{src.source_quality_score:.2f}` "
+                f"*(Authority: `{src.credibility_score:.2f}` · Recency: `{src.recency_score:.2f}`)* · "
+                f"📝 **Statement Quality (Aussagequalität):** `{src.statement_quality_score:.2f}` · "
+                f"⭐ **Composite:** `{src.composite_score:.2f}`  \n"
                 f"   *\"{src.snippet}\"*"
             )
 

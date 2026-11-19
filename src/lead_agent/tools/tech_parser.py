@@ -23,6 +23,7 @@ except ImportError:  # pragma: no cover
 
 from lead_agent.config import DEFAULT_SETTINGS
 from lead_agent.context import LeadRunContext
+from lead_agent.security import SSRFBlockedError, safe_http_get
 from lead_agent.tools.web_scraper import DEFAULT_HEADERS, normalize_target_url
 
 CONFIRMED_THRESHOLD = 0.80
@@ -282,14 +283,14 @@ def parse_job_board_signals(
 async def detect_website_tech_stack_impl(
     url: str, timeout: float = DEFAULT_SETTINGS.http_timeout_seconds
 ) -> dict[str, object]:
-    """Fetch a target website and fingerprint its web, analytics, and cloud stack with confidence scores."""
+    """Fetch a target website via SSRF-safe GET and fingerprint its web, analytics, and cloud stack."""
     normalized_url = normalize_target_url(url)
     timestamp = utc_now_iso()
     async with httpx.AsyncClient(
-        headers=DEFAULT_HEADERS, follow_redirects=True, timeout=timeout
+        headers=DEFAULT_HEADERS, follow_redirects=False, timeout=timeout
     ) as client:
         try:
-            response = await client.get(normalized_url)
+            response = await safe_http_get(normalized_url, client)
             headers_dict = {k.lower(): v for k, v in response.headers.items()}
             final_url = str(response.url)
             detailed = parse_tech_signals_detailed(
@@ -314,7 +315,7 @@ async def detect_website_tech_stack_impl(
                 "server_header": headers_dict.get("server", "unknown"),
                 "powered_by": headers_dict.get("x-powered-by", "unknown"),
             }
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, SSRFBlockedError) as exc:
             return {
                 "url": normalized_url,
                 "detected_at": timestamp,
@@ -329,31 +330,31 @@ async def detect_website_tech_stack_impl(
 async def scrape_careers_and_job_postings_impl(
     url: str, timeout: float = DEFAULT_SETTINGS.http_timeout_seconds
 ) -> dict[str, object]:
-    """Scan common careers/jobs paths on the company domain to infer backend tech stack."""
+    """Scan common careers/jobs paths on the company domain via SSRF-safe GET to infer backend tech stack."""
     normalized_url = normalize_target_url(url)
     parsed = urlparse(normalized_url)
     base_origin = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else normalized_url
 
     career_paths = ["/careers", "/jobs", "/company/careers", "/about/careers"]
     async with httpx.AsyncClient(
-        headers=DEFAULT_HEADERS, follow_redirects=True, timeout=timeout
+        headers=DEFAULT_HEADERS, follow_redirects=False, timeout=timeout
     ) as client:
         for path in career_paths:
             candidate_url = urljoin(base_origin, path)
             try:
-                resp = await client.get(candidate_url)
+                resp = await safe_http_get(candidate_url, client)
                 if resp.status_code == 200 and "text/html" in resp.headers.get("content-type", ""):
                     parsed_jobs = parse_job_board_signals(resp.text, str(resp.url))
                     if parsed_jobs["detected_job_skills"] or parsed_jobs["open_role_signals"]:
                         return parsed_jobs
-            except httpx.HTTPError:
+            except (httpx.HTTPError, SSRFBlockedError):
                 continue
 
         # Fallback: inspect homepage for careers links or embedded tech keywords
         try:
-            home_resp = await client.get(normalized_url)
+            home_resp = await safe_http_get(normalized_url, client)
             return parse_job_board_signals(home_resp.text, str(home_resp.url))
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, SSRFBlockedError) as exc:
             return {
                 "careers_url": normalized_url,
                 "detected_at": utc_now_iso(),

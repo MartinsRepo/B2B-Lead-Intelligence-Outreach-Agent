@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
@@ -40,6 +41,7 @@ except ImportError:  # pragma: no cover
 from lead_agent.config import DEFAULT_SETTINGS, DEFAULT_SPAM_PHRASES, AgentSettings
 from lead_agent.context import LeadRunContext
 from lead_agent.schemas import LeadReport
+from lead_agent.security import validate_url_ssrf
 
 # Matches valid domains (e.g. stripe.com, sub.acme.co.uk) or full HTTP/HTTPS URLs
 DOMAIN_REGEX = re.compile(
@@ -70,8 +72,9 @@ class ValidationOutcome:
 def validate_lead_input(
     raw_input: str,
     settings: AgentSettings | None = None,
+    dns_resolver: Callable[[str], list[str]] | None = None,
 ) -> ValidationOutcome:
-    """Validate that user input contains a legitimate B2B domain or corporate URL."""
+    """Validate that user input contains a legitimate B2B domain or corporate URL and passes SSRF checks."""
     active_settings = settings or DEFAULT_SETTINGS
     cleaned = raw_input.strip()
     if not cleaned:
@@ -148,6 +151,19 @@ def validate_lead_input(
             reason=f"Host '{hostname}' is a private/local address and is blocked by the Input Guardrail.",
         )
 
+    ssrf_check = validate_url_ssrf(
+        normalized,
+        block_private_ips=active_settings.block_private_ips,
+        resolve_dns=active_settings.block_private_ips,
+        dns_resolver=dns_resolver,
+    )
+    if not ssrf_check.is_safe:
+        return ValidationOutcome(
+            is_valid=False,
+            normalized_target="",
+            reason=ssrf_check.reason,
+        )
+
     return ValidationOutcome(
         is_valid=True,
         normalized_target=normalized,
@@ -158,8 +174,9 @@ def validate_lead_input(
 def validate_lead_output(
     report: LeadReport,
     settings: AgentSettings | None = None,
+    dns_resolver: Callable[[str], list[str]] | None = None,
 ) -> ValidationOutcome:
-    """Verify that the generated LeadReport has valid source citations, grounded claims, and professional tone."""
+    """Verify that the generated LeadReport has valid, SSRF-safe source citations, grounded claims, and professional tone."""
     active_settings = settings or DEFAULT_SETTINGS
     if not active_settings.enable_output_guardrail:
         return ValidationOutcome(
@@ -185,6 +202,18 @@ def validate_lead_output(
                 is_valid=False,
                 normalized_target=report.target_domain,
                 reason=f"Output Guardrail failed: Invalid source URL '{src.url}'.",
+            )
+        ssrf_check = validate_url_ssrf(
+            src.url,
+            block_private_ips=active_settings.block_private_ips,
+            resolve_dns=active_settings.block_private_ips,
+            dns_resolver=dns_resolver,
+        )
+        if not ssrf_check.is_safe:
+            return ValidationOutcome(
+                is_valid=False,
+                normalized_target=report.target_domain,
+                reason=f"Output Guardrail blocked unsafe source URL '{src.url}': {ssrf_check.reason}",
             )
         if src.composite_score < active_settings.min_source_credibility:
             return ValidationOutcome(

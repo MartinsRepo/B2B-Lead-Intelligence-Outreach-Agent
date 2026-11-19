@@ -253,6 +253,7 @@ async def run_lead_intelligence_pipeline(
             target_domain=precheck.normalized_target,
             source_type=src.source_type,
             published_date=src.published_date,
+            updated_date=src.updated_date,
         )
         enriched_sources.append(
             SourceCitation(
@@ -261,7 +262,12 @@ async def run_lead_intelligence_pipeline(
                 snippet=evaluated.snippet,
                 source_type=evaluated.source_type,
                 published_date=evaluated.published_date,
+                updated_date=evaluated.updated_date,
+                age_days=evaluated.age_days,
+                recency_score=evaluated.recency_score,
                 credibility_score=evaluated.credibility_score,
+                source_quality_score=evaluated.source_quality_score,
+                statement_quality_score=evaluated.statement_quality_score,
                 relevance_score=evaluated.relevance_score,
                 composite_score=evaluated.composite_score,
             )

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 from lead_agent.tools.research_engine import (
+    compute_recency_score,
     deduplicate_and_rank_sources,
     evaluate_source_quality,
     extract_json_ld_and_hydration_state,
@@ -220,5 +223,95 @@ def test_parse_rss_xml_and_evaluate_source_quality() -> None:
     ranked = deduplicate_and_rank_sources([generic_src, official_src], min_score=0.60)
     assert len(ranked) == 1
     assert ranked[0].url == "https://acme.io/news/series-c-launch"
+
+
+def test_source_scoring_considers_actual_age_and_separates_pub_vs_update_dates() -> None:
+    ref_date = date(2026, 11, 19)
+
+    # 1. Fresh article (5 days old) vs. stale 3-year-old article
+    fresh_recency, fresh_age = compute_recency_score(
+        published_date="2026-11-14", reference_date=ref_date
+    )
+    stale_recency, stale_age = compute_recency_score(
+        published_date="2023-05-10", reference_date=ref_date
+    )
+    assert fresh_age == 5
+    assert stale_age > 1000
+    assert fresh_recency == 0.98
+    assert stale_recency == 0.25
+
+    # 2. Older article (400 days old) that was recently updated (5 days ago)
+    blended_recency, pub_age = compute_recency_score(
+        published_date="2025-10-15",
+        updated_date="2026-11-14",
+        reference_date=ref_date,
+    )
+    old_unupdated_recency, _ = compute_recency_score(
+        published_date="2025-10-15",
+        reference_date=ref_date,
+    )
+    assert pub_age == 400
+    assert old_unupdated_recency < blended_recency < fresh_recency
+
+    # 3. Verify JSON-LD extracts published_dates and updated_dates separately
+    html_with_both_dates = """
+    <html>
+      <head>
+        <script type="application/ld+json">
+          {
+            "@type": "NewsArticle",
+            "headline": "Acme Q3 Update",
+            "datePublished": "2026-09-01T10:00:00Z",
+            "dateModified": "2026-11-15T14:00:00Z"
+          }
+        </script>
+      </head>
+      <body><p>Body</p></body>
+    </html>
+    """
+    page_data = extract_clean_page_data(html_with_both_dates, "https://acme.io/news/q3")
+    assert page_data["published_date"] == "2026-09-01"
+    assert page_data["updated_date"] == "2026-11-15"
+
+
+def test_source_quality_and_statement_quality_scored_separately() -> None:
+    ref_date = date(2026, 11, 19)
+
+    # Case A: Official newsroom URL + fresh date (high Source Quality),
+    # but empty/vague boilerplate statement (lower Statement Quality)
+    high_source_low_statement = evaluate_source_quality(
+        title="Welcome",
+        url="https://acme.io/newsroom",
+        snippet="Click here to read more.",
+        target_domain="acme.io",
+        source_type="official_newsroom",
+        published_date="2026-11-15",
+        reference_date=ref_date,
+    )
+
+    # Case B: Older third-party HTTP page (lower Source Quality),
+    # but rich quantitative B2B trigger statement (high Statement Quality)
+    low_source_high_statement = evaluate_source_quality(
+        title="Acme Announces $50M Series B Funding and Enterprise Cloud AI Platform Launch",
+        url="http://blog-archive.example.org/acme-post",
+        snippet=(
+            "In Q3 2026, Acme launched its enterprise cloud AI platform, reducing latency by 42% "
+            "and scaling to 5M events/sec across 200 enterprise customers."
+        ),
+        target_domain="acme.io",
+        source_type="external_news",
+        published_date="2023-01-10",
+        reference_date=ref_date,
+    )
+
+    assert (
+        high_source_low_statement.source_quality_score
+        > low_source_high_statement.source_quality_score
+    )
+    assert (
+        low_source_high_statement.statement_quality_score
+        > high_source_low_statement.statement_quality_score
+    )
+
 
 

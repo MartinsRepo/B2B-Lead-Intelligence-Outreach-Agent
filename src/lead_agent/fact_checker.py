@@ -12,6 +12,7 @@ import httpx
 from lead_agent.config import DEFAULT_SETTINGS, AgentSettings
 from lead_agent.context import LeadRunContext
 from lead_agent.schemas import LeadReport, SourceCitation, VerifiedClaim
+from lead_agent.security import safe_http_get
 from lead_agent.tools.web_scraper import DEFAULT_HEADERS, extract_clean_page_data
 
 STOPWORDS: frozenset[str] = frozenset(
@@ -436,13 +437,13 @@ async def refetch_sources_corpus(
         return corpus
 
     async with httpx.AsyncClient(
-        headers=DEFAULT_HEADERS, follow_redirects=True, timeout=timeout
+        headers=DEFAULT_HEADERS, follow_redirects=False, timeout=timeout
     ) as client:
         for src in sources[:6]:
             if src.url in corpus:
                 continue
             try:
-                resp = await client.get(src.url)
+                resp = await safe_http_get(src.url, client)
                 if resp.status_code == 200 and "text/html" in resp.headers.get("content-type", ""):
                     page_data = extract_clean_page_data(resp.text, str(resp.url), max_chars=5000)
                     headings_str = ". ".join(

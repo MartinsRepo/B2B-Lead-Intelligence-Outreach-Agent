@@ -22,6 +22,7 @@ except ImportError:  # pragma: no cover - fallback when SDK is not yet installed
 
 from lead_agent.config import DEFAULT_SETTINGS
 from lead_agent.context import LeadRunContext
+from lead_agent.security import SSRFBlockedError, safe_http_get, validate_url_ssrf
 from lead_agent.tools.research_engine import (
     EvaluatedSource,
     deduplicate_and_rank_sources,
@@ -100,9 +101,9 @@ def extract_clean_page_data(html: str, base_url: str, max_chars: int = 6000) -> 
         if news_pattern.search(href) or news_pattern.search(label):
             full_url = urljoin(base_url, href)
             if (
-                full_url.startswith(("http://", "https://"))
-                and full_url not in seen_news_urls
+                full_url not in seen_news_urls
                 and len(news_links) < 10
+                and validate_url_ssrf(full_url, resolve_dns=False).is_safe
             ):
                 seen_news_urls.add(full_url)
                 news_links.append({"title": label or "Company Update Page", "url": full_url})
@@ -124,13 +125,16 @@ def extract_clean_page_data(html: str, base_url: str, max_chars: int = 6000) -> 
         combined_body = body_text
 
     published_dates = structured_state.get("published_dates", [])
-    first_date = str(published_dates[0]) if isinstance(published_dates, list) and published_dates else ""
+    updated_dates = structured_state.get("updated_dates", [])
+    first_pub = str(published_dates[0]) if isinstance(published_dates, list) and published_dates else ""
+    first_upd = str(updated_dates[0]) if isinstance(updated_dates, list) and updated_dates else ""
 
     return {
         "url": base_url,
         "title": title,
         "meta_description": meta_desc,
-        "published_date": first_date,
+        "published_date": first_pub,
+        "updated_date": first_upd,
         "headings": headings,
         "discovered_news_links": news_links,
         "discovered_rss_feeds": rss_feeds,
@@ -142,13 +146,13 @@ def extract_clean_page_data(html: str, base_url: str, max_chars: int = 6000) -> 
 async def scrape_company_website_impl(
     url: str, timeout: float = DEFAULT_SETTINGS.http_timeout_seconds
 ) -> dict[str, object]:
-    """Fetch a company webpage with JSON-LD/hydration recovery and JS reader fallback."""
+    """Fetch a company webpage with SSRF/redirect checks, JSON-LD/hydration recovery, and JS reader fallback."""
     normalized_url = normalize_target_url(url)
     async with httpx.AsyncClient(
-        headers=DEFAULT_HEADERS, follow_redirects=True, timeout=timeout
+        headers=DEFAULT_HEADERS, follow_redirects=False, timeout=timeout
     ) as client:
         try:
-            response = await client.get(normalized_url)
+            response = await safe_http_get(normalized_url, client)
             response.raise_for_status()
             page_data = extract_clean_page_data(
                 response.text,
@@ -173,15 +177,22 @@ async def scrape_company_website_impl(
                 target_domain=normalized_url,
                 source_type="corporate_website",
                 published_date=str(page_data.get("published_date", "")),
+                updated_date=str(page_data.get("updated_date", "")),
             )
             page_data["source_evaluation"] = {
                 "source_type": evaluated.source_type,
+                "published_date": evaluated.published_date,
+                "updated_date": evaluated.updated_date,
+                "age_days": evaluated.age_days,
+                "recency_score": evaluated.recency_score,
                 "credibility_score": evaluated.credibility_score,
+                "source_quality_score": evaluated.source_quality_score,
+                "statement_quality_score": evaluated.statement_quality_score,
                 "relevance_score": evaluated.relevance_score,
                 "composite_score": evaluated.composite_score,
             }
             return page_data
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, SSRFBlockedError) as exc:
             return {
                 "url": normalized_url,
                 "error": f"HTTP fetch warning: {exc!s}",
@@ -226,11 +237,11 @@ async def fetch_company_news_and_press_impl(
     candidate_rss_paths = ["/feed", "/rss.xml", "/blog/rss.xml", "/news/rss.xml"]
 
     async with httpx.AsyncClient(
-        headers=DEFAULT_HEADERS, follow_redirects=True, timeout=timeout
+        headers=DEFAULT_HEADERS, follow_redirects=False, timeout=timeout
     ) as client:
         # Step 1: Inspect homepage for embedded news links, JSON-LD articles, and RSS feed links
         try:
-            home_resp = await client.get(normalized_url)
+            home_resp = await safe_http_get(normalized_url, client)
             if home_resp.status_code == 200:
                 home_data = extract_clean_page_data(
                     home_resp.text, str(home_resp.url), max_chars=2500
@@ -241,7 +252,7 @@ async def fetch_company_news_and_press_impl(
                 for feed_url in home_data.get("discovered_rss_feeds", []):  # type: ignore[union-attr]
                     if isinstance(feed_url, str) and feed_url not in rss_feed_urls:
                         rss_feed_urls.append(feed_url)
-        except httpx.HTTPError:
+        except (httpx.HTTPError, SSRFBlockedError):
             pass
 
         # Step 2: Check discovered RSS/Atom feeds + common RSS endpoints
@@ -252,7 +263,7 @@ async def fetch_company_news_and_press_impl(
 
         for feed_url in rss_feed_urls[:3]:
             try:
-                f_resp = await client.get(feed_url, timeout=6.0)
+                f_resp = await safe_http_get(feed_url, client, timeout=6.0)
                 if f_resp.status_code == 200 and (
                     "<rss" in f_resp.text[:500].lower() or "<feed" in f_resp.text[:500].lower()
                 ):
@@ -266,11 +277,12 @@ async def fetch_company_news_and_press_impl(
                                 target_domain=domain,
                                 source_type="rss_feed",
                                 published_date=item.get("published_date", ""),
+                                updated_date=item.get("updated_date", ""),
                             )
                         )
                     if len(evaluated_sources) >= 4:
                         break
-            except httpx.HTTPError:
+            except (httpx.HTTPError, SSRFBlockedError):
                 continue
 
         # Step 3: Crawl corporate newsroom / press subpages and discovered news links
@@ -285,7 +297,7 @@ async def fetch_company_news_and_press_impl(
 
         for target in targets_to_crawl[:6]:
             try:
-                resp = await client.get(target, timeout=8.0)
+                resp = await safe_http_get(target, client, timeout=8.0)
                 if resp.status_code == 200 and "text/html" in resp.headers.get("content-type", ""):
                     page_data = extract_clean_page_data(resp.text, str(resp.url), max_chars=2500)
                     snippet_text = str(
@@ -307,11 +319,12 @@ async def fetch_company_news_and_press_impl(
                             target_domain=domain,
                             source_type="official_newsroom",
                             published_date=str(page_data.get("published_date", "")),
+                            updated_date=str(page_data.get("updated_date", "")),
                         )
                     )
                     if len(evaluated_sources) >= 6:
                         break
-            except httpx.HTTPError:
+            except (httpx.HTTPError, SSRFBlockedError):
                 continue
 
         # Step 4: Fetch external news coverage & press releases via Google News RSS
@@ -327,6 +340,7 @@ async def fetch_company_news_and_press_impl(
                     target_domain=domain,
                     source_type="external_news",
                     published_date=ext.get("published_date", ""),
+                    updated_date=ext.get("updated_date", ""),
                 )
             )
 

@@ -2,6 +2,9 @@
 ![intro](gallery/b2b_latest.png)
 
 # B2B Lead Intelligence & Outreach Agent
+## ✨Ideation and Implementation
+- Ideation: ChatGPT and Gemini 3 Pro
+- Implementation: Antigravity Agent
 
 An autonomous multi-agent B2B sales research and hyper-personalized outreach pipeline built with the **OpenAI Agents SDK**, **Pydantic v2**, **HTTPX / BeautifulSoup4**, and **Streamlit**.
 
@@ -13,11 +16,11 @@ Given a target company domain (e.g., `bmwgroup.com/en`, `stripe.com`, `vercel.co
 
 - **Multi-Agent Orchestration (`.as_tool()` Pattern):** Uses the OpenAI Agents SDK to coordinate three specialized sub-agents (`Company & News Agent`, `Tech-Stack Agent`, and `Outreach Copywriter Agent`) under a central `Lead Orchestrator`.
 - **Cost-Aware Model Routing:** Routes high-volume HTML scraping and job-board extraction tasks to a fast, low-cost model tier (`gpt-6-luna` / `gpt-4o-mini`) while reserving a high-reasoning model tier (`gpt-6.2-sol` / `gpt-4o`) for orchestration and executive copywriting.
-- **Multi-Source Research & Source Quality Scoring:** Combines corporate newsroom subpage crawling, RSS/Atom feed auto-discovery, JSON-LD & Next.js (`__NEXT_DATA__`) hydration extraction (with automatic JS reader fallback for SPAs), and external Google News RSS search—scoring every source on **Credibility (45%)**, **Relevance (40%)**, and **Recency (15%)**.
+- **Multi-Source Research & Dual Source/Statement Scoring:** Combines corporate newsroom subpage crawling, RSS/Atom feed auto-discovery, JSON-LD & Next.js (`__NEXT_DATA__`) hydration extraction (with automatic JS reader fallback for SPAs), and external Google News RSS search. Distinguishes **`published_date`** vs. **`updated_date`**, calculates actual article age in days (**`age_days`**) with time-decay recency, and separately scores **`source_quality_score` (*Quellenqualität*)** and **`statement_quality_score` (*Aussagequalität*)**.
 - **5-Step Semantic Fact-Verification & Claim-Grounding Engine:** Audits all core statements (`executive_summary`, `recent_news_and_triggers`, `identified_pain_points`, and `tech_stack`) by (1) linking each claim to a source reference, (2) requiring a **successful live HTTP re-fetch (`source_refetched=True`)** for full verification, (3) extracting the matching passage, (4) scoring both lexical coverage and **semantic similarity** (B2B concept clusters, character 3-gram cosine similarity, and negation/contradiction detection), and (5) separately labeling partially supported statements (`[Partially Supported]`) versus unverifiable hypotheses (`[Hypothesis / Inferred]` or discarding them).
 - **Evidence-Based Tech-Stack Detection:** Eliminates keyword false positives by recording a `DetectedTechnology` profile for every signal—including **`confidence_score` (`0.00–1.00`)**, **`signal_source`** (`http_header`, `script_asset`, `meta_generator`, `job_posting_requirement`, `body_text_mention`), **`detected_at` UTC timestamp**, and an explicit distinction between **`confirmed`** (*sicher erkannt*, `>= 0.80`) and **`suspected`** (*vermutet*, `< 0.80`).
-- **Configurable Guardrails & Policy Control Plane:**
-  - *Input Guardrail:* Validates domain/corporate URL format and blocks malformed inputs or private/localhost IPs (SSRF protection) before any LLM tokens are spent.
+- **Configurable Guardrails & Multi-Layer SSRF Defense (`security.py`):**
+  - *Input Guardrail & SSRF Protection:* Validates domain/corporate URL format, blocks all private/loopback/link-local/CGNAT/cloud-metadata IPv4 & IPv6 ranges (`169.254.169.254`, `10.0.0.0/8`, `127.0.0.0/8`, `100.64.0.0/10`, `fc00::/7`), verifies **DNS resolution (`A`/`AAAA`)** against private IPs, **re-validates every HTTP redirect hop (`301/302/303/307/308`)**, and sanitizes all discovered RSS feed and external source URLs.
   - *Modular `.as_tool()` Toggles:* Enable or disable individual sub-agents on the fly from the Streamlit sidebar.
   - *Output Guardrail:* Enforces configurable minimum verified HTTP/HTTPS source citations, minimum source quality scores, minimum pitch length, and customizable anti-spam phrase filtering.
 - **Deterministic Structured Outputs:** Enforces strict JSON schemas using Pydantic v2 (`output_type=LeadReport`), eliminating unstructured Markdown chaos for reliable UI rendering and downstream CRM export.
@@ -48,6 +51,7 @@ B2B-Lead-Intelligence-Outreach-Agent/
 │   ├── fact_checker.py             # 5-step source re-fetch, passage extraction & claim verification
 │   ├── guardrails.py               # Configurable @input_guardrail & @output_guardrail
 │   ├── schemas.py                  # Pydantic v2 models (LeadReport, VerifiedClaim, etc.)
+│   ├── security.py                 # Multi-layer SSRF protection, DNS checks & redirect-safe HTTP client
 │   ├── agents/
 │   │   ├── company_news_agent.py   # Fast-tier web & press release researcher
 │   │   ├── tech_stack_agent.py     # Fast-tier HTML & job-board tech stack parser
@@ -57,7 +61,7 @@ B2B-Lead-Intelligence-Outreach-Agent/
 │       ├── research_engine.py      # Multi-source news aggregator, JSON-LD/SPA extractor & source scoring
 │       ├── web_scraper.py          # Website & multi-channel press scraper
 │       └── tech_parser.py          # Tech fingerprinting & careers page parser
-├── tests/                          # Comprehensive unit & integration test suite (33 tests)
+├── tests/                          # Comprehensive unit & integration test suite (60 tests)
 ├── ui/
 │   └── app.py                      # Streamlit production UI & guardrail control plane
 ├── .env.example                    # Environment variable template

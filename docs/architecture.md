@@ -48,9 +48,13 @@ In [`src/lead_agent/agents/orchestrator.py`](../src/lead_agent/agents/orchestrat
 
 All guardrails and `.as_tool()` sub-agent delegations are dynamically configurable at runtime via `AgentSettings` and the Streamlit sidebar Control Plane:
 
-### 1. Input Guardrail (`@input_guardrail`)
+### 1. Input Guardrail & Multi-Layer SSRF Defense (`@input_guardrail` & `src/lead_agent/security.py`)
 - **`enable_input_guardrail` (`bool`, default `True`):** Executed **before** the orchestrator invokes any LLM or sub-agent. Validates that the user provided a well-formed corporate domain (e.g., `bmwgroup.com/en`, `stripe.com`, `https://vercel.com`).
-- **`block_private_ips` (`bool`, default `True`):** SSRF tripwire that blocks loopback and private network targets (`localhost`, `127.0.0.1`, `0.0.0.0`, `::1`, `.local`, `.internal`) by triggering `tripwire_triggered=True`.
+- **`block_private_ips` (`bool`, default `True`) & `validate_url_ssrf`:** Comprehensive 4-layer SSRF protection enforced across all scrapers, RSS feeds, external sources, and fact-check re-fetches:
+  1. **Private & Reserved Network Blocking (`is_ip_blocked`):** Blocks RFC 1918 private networks (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), loopback (`127.0.0.0/8`, `::1`), link-local and cloud metadata endpoints (`169.254.0.0/16`, `169.254.169.254`, `fe80::/10`), Carrier-Grade NAT (`100.64.0.0/10`), benchmark/test-net/multicast/reserved ranges (`198.18.0.0/15`, `224.0.0.0/4`, `240.0.0.0/4`), and IPv4-mapped IPv6 addresses (`::ffff:127.0.0.1`, `::ffff:169.254.169.254`).
+  2. **DNS Resolution Verification (`resolve_hostname_ips`):** Resolves `A` and `AAAA` DNS records for the target hostname and verifies that **every** resolved IP address is a public IP—preventing DNS rebinding attacks.
+  3. **Per-Hop Redirect Re-Validation (`safe_http_get`):** Disables automatic HTTP redirects (`follow_redirects=False`) and manually intercepts every `301/302/303/307/308` redirect hop, re-validating both the target URL and its DNS resolution before following the redirect.
+  4. **RSS, Sublink & External Source Sanitization:** Validates all discovered `<link rel="alternate">` RSS/Atom URLs, RSS `<item><link>` article URLs, newsroom sublinks, and Output Guardrail `SourceCitation` URLs against `validate_url_ssrf`.
 
 ### 2. Modular Agents-as-Tools (`.as_tool()`) Delegation
 - **`enable_company_news_agent` (`bool`, default `True`):** Attaches/detaches `company_news_research_tool`.
@@ -77,10 +81,12 @@ To overcome the limitations of simple static HTML scraping on modern B2B website
    - **Auto-Discovered RSS / Atom Feeds:** Detects `<link rel="alternate" type="application/rss+xml|application/atom+xml">` and probes `/feed`, `/rss.xml`, `/blog/rss.xml`.
    - **Deep Corporate Newsroom Crawler:** Crawls `/newsroom`, `/press`, `/news`, `/blog` and follows discovered press links from the homepage.
    - **External News & Press Wires (Google News RSS):** Queries external press coverage and Tier-1 news wires (`prnewswire.com`, `businesswire.com`, `reuters.com`, `techcrunch.com`, `handelsblatt.com`, etc.).
-3. **Deterministic Source Quality Scoring (`evaluate_source_quality`):**
-   - **`credibility_score` (`0.0–1.0`, weight 45%):** Evaluates domain authority and provenance (first-party official newsroom `0.96`, Tier-1 press wires `0.92`, first-party domain `0.90`, verified external news `0.85`).
-   - **`relevance_score` (`0.0–1.0`, weight 40%):** Measures company mention presence, B2B trigger keyword density (`launch`, `partnership`, `funding`, `quarterly`, `enterprise`, `ai`, `cloud`), and snippet depth.
-   - **`composite_score` (`0.0–1.0`, includes 15% recency weight):** Ranks and deduplicates sources best-first before synthesis and Output Guardrail validation.
+3. **Deterministic Dual Source & Statement Scoring (`evaluate_source_quality`):**
+   - **Publication vs. Update Date Differentiation:** Extracts `published_date` (*Veröffentlichungsdatum* via `datePublished`, `article:published_time`, `pubDate`, `<published>`) and `updated_date` (*Aktualisierungsdatum* via `dateModified`, `article:modified_time`, `og:updated_time`, `<updated>`) separately.
+   - **Actual Age & Time-Decay Recency (`compute_recency_score`):** Computes the true age of the news item in days (`age_days`) and applies a time-decay curve (`<=30d: 0.98`, `31–90d: 0.90`, `91–180d: 0.80`, `181–365d: 0.65`, `366–730d: 0.45`, `>730d: 0.25`). When both `published_date` and `updated_date` are present, `age_days` preserves the original publication age while `recency_score` blends 70% publication freshness + 30% update freshness.
+   - **`source_quality_score` (*Quellenqualität*, `0.0–1.0`):** Evaluates the intrinsic authority and freshness of the source itself (`72% domain provenance/credibility + 28% recency_score`).
+   - **`statement_quality_score` (*Aussagequalität*, `0.0–1.0`):** Separately evaluates the substantive quality of the extracted statement (`evaluate_statement_quality`), scoring target company entity mention (`+0.20`), B2B trigger keyword density (`+0.20`), quantitative/factual specificity such as percentages, dollar figures, metrics, or quarters (`+0.10`), and statement depth (`+0.05`).
+   - **`composite_score` (`0.0–1.0`):** Combines `55% source_quality_score + 45% statement_quality_score` to rank and deduplicate sources best-first.
 
 ---
 
