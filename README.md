@@ -1,8 +1,11 @@
-# 🎯 B2B Lead Intelligence & Outreach Agent
+
+![intro](gallery/b2b_latest.png)
+
+# B2B Lead Intelligence & Outreach Agent
 
 An autonomous multi-agent B2B sales research and hyper-personalized outreach pipeline built with the **OpenAI Agents SDK**, **Pydantic v2**, **HTTPX / BeautifulSoup4**, and **Streamlit**.
 
-Given a target company domain (e.g., `bmwgroup.com/en`, `stripe.com`, `vercel.com`) or corporate URL, the agent team validates the target through configurable **Input Guardrails**, scrapes press releases and company news, fingerprints the web & cloud tech stack, analyzes open engineering job postings for hiring signals, and synthesizes a source-verified executive outreach pitch—complete with a **"Standard Single-Prompt Baseline vs. Multi-Agent Grounded Pitch"** comparison and real-time token/cost telemetry.
+Given a target company domain (e.g., `bmwgroup.com/en`, `stripe.com`, `vercel.com`) or corporate URL, the agent team validates the target through configurable **Input Guardrails**, scrapes press releases and company news across multiple channels, fingerprints the web & cloud tech stack with evidence-based confidence scores, analyzes open engineering job postings for hiring signals, verifies claims against re-fetched source passages, and synthesizes an executive **Outreach & Phone Call Brief** (grounded email pitch, short-form DM icebreaker, low-friction CTA, and a 5-point live phone call cheat-sheet) with real-time token and cost telemetry.
 
 ---
 
@@ -24,24 +27,6 @@ Given a target company domain (e.g., `bmwgroup.com/en`, `stripe.com`, `vercel.co
 
 ## 🏗️ System Architecture
 
-```mermaid
-flowchart TD
-    INPUT["[User Input: Target Company Domain / Corporate URL]"] --> IG["[Configurable Input Guardrail]<br/>- Corporate Domain & URL Regex Validation<br/>- Optional Private / Localhost IP SSRF Tripwire<br/>(Prevents token spend on malformed inputs)"]
-    IG --> ORCH["[Lead Orchestrator]<br/>Controls end-to-end workflow (gpt-6.2-sol)"]
-
-    ORCH -->|".as_tool() (toggleable)"| CNA["[Company & News Agent]<br/>(gpt-6-luna)"]
-    ORCH -->|".as_tool() (toggleable)"| TSA["[Tech-Stack Agent]<br/>(gpt-6-luna)"]
-    ORCH -->|".as_tool() (toggleable)"| OCA["[Outreach Copywriter Agent]<br/>(gpt-6.2-sol)"]
-
-    CNA --> WNS["[Multi-Source Research & Scoring Engine]<br/>(JSON-LD/SPA Hydration + RSS/Atom + Newsroom + External News RSS)"]
-    TSA --> JBP["[Job-Board & HTML Parser]<br/>(HTTPX + BS4 + Tech Fingerprinting)"]
-
-    WNS --> OG["[Configurable Output Guardrail & Structured Output]<br/>- Enforces min. verified HTTP/HTTPS source citations<br/>- Validates min. pitch length & customizable anti-spam filter<br/>- Enforces Pydantic v2 schema (output_type=LeadReport)"]
-    JBP --> OG
-    OCA --> OG
-
-    OG --> UI["[Streamlit Production UI + Real-Time Cost & Token Telemetry]"]
-```
 
 For a deep dive into the internals, model alias resolution, guardrail policy rules, and persistent async event-loop management, see [`docs/architecture.md`](docs/architecture.md).
 
@@ -54,6 +39,8 @@ B2B-Lead-Intelligence-Outreach-Agent/
 ├── .github/workflows/ci.yml        # GitHub Actions CI (Ruff + Pytest)
 ├── docs/
 │   └── architecture.md             # Detailed technical architecture documentation
+├── gallery/
+│   └── b2b_latest.png              # Pictures
 ├── src/lead_agent/
 │   ├── __init__.py
 │   ├── config.py                   # Cost-Aware Routing, pricing & guardrail policy settings

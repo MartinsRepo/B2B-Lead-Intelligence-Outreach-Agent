@@ -33,7 +33,7 @@ A common anti-pattern in agentic workflows is sending raw HTML, press releases, 
 | :--- | :--- | :--- | :--- | :--- |
 | **Company & News Agent** | Scrapes homepage, `/news`, `/press`, and `/blog` to extract strategic triggers | `gpt-6-luna` (`gpt-4o-mini`) | ⚡ Fast (`$0.15 / 1M in`) | `scrape_company_website`, `fetch_company_news_and_press` |
 | **Tech-Stack Agent** | Fingerprints HTTP headers, DOM scripts, and `/careers` job boards for tech signals | `gpt-6-luna` (`gpt-4o-mini`) | ⚡ Fast (`$0.15 / 1M in`) | `detect_website_tech_stack`, `scrape_careers_and_job_postings` |
-| **Outreach Copywriter Agent** | Synthesizes research into a single-prompt baseline vs. multi-agent grounded pitch | `gpt-6.2-sol` (`gpt-4o`) | 🧠 Reasoning (`$2.50 / 1M in`) | `output_type=OutreachPitch` |
+| **Outreach Copywriter Agent** | Synthesizes research into a grounded email pitch, DM hook, CTA, and 5-point phone call cheat-sheet | `gpt-6.2-sol` (`gpt-4o`) | 🧠 Reasoning (`$2.50 / 1M in`) | `output_type=OutreachPitch` |
 | **Lead Orchestrator** | Coordinates `.as_tool()` sub-agents, enforces guardrails, and emits `LeadReport` | `gpt-6.2-sol` (`gpt-4o`) | 🧠 Reasoning (`$2.50 / 1M in`) | `output_type=LeadReport` |
 
 ### Why Cost-Aware Routing Matters
@@ -120,10 +120,16 @@ To prevent false positives (such as flagging `Kubernetes` or `AWS` as confirmed 
 ## 4. Deterministic Structured Outputs (`src/lead_agent/schemas.py`)
 
 By passing `output_type=LeadReport` to the `Lead Orchestrator`, the OpenAI Agents SDK enforces strict adherence to the Pydantic v2 schema:
-- `LeadReport`: Top-level container with `company_name`, `target_domain`, `industry`, `executive_summary`, `recent_news_and_triggers`, and `identified_pain_points`.
-- `TechStackAnalysis`: Lists `detected_technologies`, `hiring_signals`, and `inferred_infrastructure_needs`.
-- `OutreachPitch`: Contains both `generic_ai_message` (Standard Single-Prompt Baseline) and `hyper_personalized_pitch` (Multi-Agent Grounded Pitch), plus `subject_line`, `icebreaker_hook`, and `call_to_action`.
-- `SourceCitation`: Enforces valid HTTP/HTTPS URLs (`url`), `title`, and factual `snippet`.
+- **`LeadReport`:** Top-level container with `company_name`, `target_domain`, `industry`, `executive_summary`, `recent_news_and_triggers`, `identified_pain_points`, `tech_stack`, `outreach`, `sources`, and `verified_claims`.
+- **`TechStackAnalysis` & `DetectedTechnology`:** Lists `detected_technologies`, `hiring_signals`, `inferred_infrastructure_needs`, and `technology_signals` (each with `confidence_score`, `signal_source`, `detected_at`, and `detection_status`: `confirmed` vs. `suspected`).
+- **`OutreachPitch`:** Contains the multi-agent grounded outreach deliverables rendered in the **Outreach & Phone Call Brief** tab:
+  - `subject_line`: High-converting B2B cold email subject line.
+  - `hyper_personalized_pitch`: Grounded executive email pitch (rendered on the left column).
+  - `icebreaker_hook`: Short-form direct message icebreaker (`<300` chars, rendered on the top-right card).
+  - `call_to_action`: Low-friction, value-first CTA (rendered on the bottom-right card).
+  - `phone_call_bullet_points`: 5-point bulleted phone call cheat-sheet (`Opening Trigger Hook`, `Tech & Hiring Context`, `Core Pain-Point Hypothesis`, `Key Discovery Question`, and `Low-Friction Close`).
+- **`SourceCitation`:** Enforces valid HTTP/HTTPS URLs (`url`), `title`, factual `snippet`, `source_type`, `published_date`, `credibility_score`, `relevance_score`, and `composite_score`.
+- **`VerifiedClaim`:** Stores the 5-step fact-check audit result for each claim (`claim`, `category`, `source_title`, `source_url`, `matched_excerpt`, `grounding_score`, and `verification_status`).
 
 ---
 
