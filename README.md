@@ -65,6 +65,7 @@ B2B-Lead-Intelligence-Outreach-Agent/
 ├── ui/
 │   └── app.py                      # Streamlit production UI & guardrail control plane
 ├── .env.example                    # Environment variable template
+├── LICENSE                         # Apache License 2.0 (Apache-2.0)
 ├── pyproject.toml                  # Dependencies and tool configuration
 └── README.md
 ```
@@ -93,8 +94,8 @@ cp .env.example .env
 
 ```dotenv
 OPENAI_API_KEY="sk-YOUR_OPENAI_API_KEY"
-FAST_MODEL="gpt-6-luna"
-REASONING_MODEL="gpt-6.2-sol"
+FAST_MODEL="gpt-4o-mini"
+REASONING_MODEL="gpt-4o"
 ```
 
 ### 3. Launch the Streamlit Application
@@ -113,3 +114,9 @@ Run the automated test suite and code quality checks:
 python -m pytest -v
 python -m ruff check src tests ui
 ```
+
+---
+
+## 📄 License
+
+This project is licensed under the **Apache License 2.0** (`Apache-2.0`). See the [LICENSE](LICENSE) file for full details.
