@@ -6,6 +6,7 @@ from lead_agent.config import AgentSettings
 from lead_agent.fact_checker import (
     HYPOTHESIS_PREFIX,
     PARTIALLY_SUPPORTED_PREFIX,
+    _apply_unverified_policy_to_claims,
     compute_semantic_similarity,
     extract_best_matching_passage,
     verify_and_ground_lead_report,
@@ -184,3 +185,73 @@ async def test_verify_and_ground_lead_report_discards_unverified_claims_when_con
     assert not any("submarine" in c for c in verified_report.recent_news_and_triggers)
     assert not any("Mars" in p for p in verified_report.identified_pain_points)
     assert "Snowflake Connector" in verified_report.recent_news_and_triggers[0]
+
+
+def test_unmapped_claims_default_to_inferred_hypothesis_fail_closed() -> None:
+    """Any claim without a matching verification record must fail closed to 'inferred_hypothesis'."""
+    res_mark = _apply_unverified_policy_to_claims(
+        ["Unmapped claim without verification record"],
+        verified_records=[],
+        policy="mark_as_hypothesis",
+    )
+    assert res_mark == [f"{HYPOTHESIS_PREFIX}Unmapped claim without verification record"]
+
+
+async def test_individual_technology_verification_prevents_masking_unbacked_tech() -> None:
+    """Verify that 3 valid technologies do NOT mask 1 unbacked technology claim."""
+    report = _build_test_report()
+    report = report.model_copy(
+        update={
+            "tech_stack": report.tech_stack.model_copy(
+                update={
+                    "detected_technologies": [
+                        "Kafka",
+                        "Snowflake",
+                        "Kubernetes",
+                        "QuantumMainframeOS",
+                    ]
+                }
+            )
+        }
+    )
+
+    async def fake_fetcher(_url: str) -> str:
+        return (
+            "AcmeCloud provides enterprise data streaming on Kubernetes clusters. "
+            "AcmeCloud launched a Zero-Copy Snowflake Connector processing 5M events/sec "
+            "with low-latency Kafka stream replication."
+        )
+
+    # 1. With mark_as_hypothesis: QuantumMainframeOS is individually flagged as hypothesis
+    marked_report = await verify_and_ground_lead_report(
+        report,
+        settings=AgentSettings(unverified_claim_policy="mark_as_hypothesis"),
+        custom_fetcher=fake_fetcher,
+    )
+    assert "Kafka" in marked_report.tech_stack.detected_technologies
+    assert "Snowflake" in marked_report.tech_stack.detected_technologies
+    assert "Kubernetes" in marked_report.tech_stack.detected_technologies
+    assert f"{HYPOTHESIS_PREFIX}QuantumMainframeOS" in marked_report.tech_stack.detected_technologies
+
+    tech_claims = {
+        vc.claim: vc.verification_status
+        for vc in marked_report.verified_claims
+        if vc.category == "tech_stack"
+    }
+    assert tech_claims["Technology: Kafka"] == "verified"
+    assert tech_claims["Technology: Snowflake"] == "verified"
+    assert tech_claims["Technology: Kubernetes"] == "verified"
+    assert tech_claims["Technology: QuantumMainframeOS"] == "inferred_hypothesis"
+
+    # 2. With discard policy: QuantumMainframeOS is removed while the 3 verified technologies remain
+    discarded_report = await verify_and_ground_lead_report(
+        report,
+        settings=AgentSettings(unverified_claim_policy="discard"),
+        custom_fetcher=fake_fetcher,
+    )
+    assert discarded_report.tech_stack.detected_technologies == [
+        "Kafka",
+        "Snowflake",
+        "Kubernetes",
+    ]
+

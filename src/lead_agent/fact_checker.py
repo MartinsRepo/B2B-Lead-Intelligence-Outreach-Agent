@@ -495,13 +495,19 @@ def _apply_unverified_policy_to_claims(
     verified_records: list[VerifiedClaim],
     policy: str,
 ) -> list[str]:
-    """Step 5: Separately label partially supported claims and mark/discard unverified claims."""
-    status_by_claim = {strip_status_prefixes(r.claim): r.verification_status for r in verified_records}
+    """Step 5: Separately label partially supported claims and mark/discard unverified claims.
+
+    Fail-Closed Default: Any claim without a matching verification record is treated as
+    `'inferred_hypothesis'` (unverified), never `'verified'`.
+    """
+    status_by_claim = {
+        strip_status_prefixes(r.claim): r.verification_status for r in verified_records
+    }
     updated: list[str] = []
 
     for claim_text in claims_list:
         clean_claim = strip_status_prefixes(claim_text)
-        status = status_by_claim.get(clean_claim, "verified")
+        status = status_by_claim.get(clean_claim, "inferred_hypothesis")
 
         if status == "inferred_hypothesis":
             if policy == "discard":
@@ -519,6 +525,99 @@ def _apply_unverified_policy_to_claims(
         updated.append(annotate_statement_by_status(first_clean, first_status))
 
     return updated
+
+
+def _verify_single_technology(
+    tech_name: str,
+    report: LeadReport,
+    refetched_corpus: dict[str, RefetchedSourceDocument],
+    min_grounding_score: float,
+) -> VerifiedClaim:
+    """Verify an individual technology claim against re-fetched sources and its own runtime signal."""
+    clean_tech = strip_status_prefixes(tech_name)
+    tech_pattern = re.compile(rf"(?<![a-zA-Z0-9]){re.escape(clean_tech)}(?![a-zA-Z0-9])", re.I)
+
+    # 1. Check if this specific technology is mentioned in any successfully re-fetched source document
+    for src in report.sources:
+        doc = refetched_corpus.get(src.url)
+        if doc is not None and doc.refetch_succeeded and tech_pattern.search(doc.text):
+            passage, _, _ = extract_best_matching_passage(clean_tech, doc.text)
+            return VerifiedClaim(
+                claim=f"Technology: {clean_tech}",
+                category="tech_stack",
+                source_title=src.title,
+                source_url=src.url,
+                source_refetched=True,
+                matched_excerpt=(passage or src.snippet)[:380],
+                semantic_score=0.90,
+                grounding_score=0.90,
+                verification_status="verified",
+            )
+
+    # 2. Check if this specific technology has its own confirmed runtime signal (HTTP header / script / DOM)
+    sig_by_name = {
+        strip_status_prefixes(s.name).lower(): s for s in report.tech_stack.technology_signals
+    }
+    own_signal = sig_by_name.get(clean_tech.lower())
+    any_refetched_src = next(
+        (src for src in report.sources if refetched_corpus.get(src.url, RefetchedSourceDocument("", "", False)).refetch_succeeded),
+        None,
+    )
+    if (
+        own_signal is not None
+        and own_signal.detection_status == "confirmed"
+        and own_signal.confidence_score >= 0.80
+        and any_refetched_src is not None
+    ):
+        return VerifiedClaim(
+            claim=f"Technology: {clean_tech}",
+            category="tech_stack",
+            source_title=any_refetched_src.title,
+            source_url=any_refetched_src.url,
+            source_refetched=True,
+            matched_excerpt=f"Confirmed runtime signal: {own_signal.signal_source}"[:380],
+            semantic_score=own_signal.confidence_score,
+            grounding_score=own_signal.confidence_score,
+            verification_status="verified",
+        )
+
+    # 3. Check if mentioned in an un-refetched source snippet (capped at partially_supported)
+    for src in report.sources:
+        doc = refetched_corpus.get(src.url)
+        refetch_ok = doc.refetch_succeeded if doc is not None else False
+        if tech_pattern.search(f"{src.title} {src.snippet}"):
+            return VerifiedClaim(
+                claim=f"Technology: {clean_tech}",
+                category="tech_stack",
+                source_title=src.title,
+                source_url=src.url,
+                source_refetched=refetch_ok,
+                matched_excerpt=src.snippet[:380],
+                semantic_score=0.60,
+                grounding_score=0.60,
+                verification_status="verified" if refetch_ok else "partially_supported",
+            )
+
+    # 4. Neither backed by re-fetched source text nor confirmed by its own runtime header/script signal
+    primary_src = report.sources[0]
+    primary_doc = refetched_corpus.get(primary_src.url)
+    primary_refetched = primary_doc.refetch_succeeded if primary_doc is not None else False
+    return VerifiedClaim(
+        claim=f"Technology: {clean_tech}",
+        category="tech_stack",
+        source_title=primary_src.title,
+        source_url=primary_src.url,
+        source_refetched=primary_refetched,
+        matched_excerpt=f"No direct evidence for '{clean_tech}' found in re-fetched source text.",
+        semantic_score=0.0,
+        grounding_score=0.0,
+        verification_status=classify_verification_status(
+            grounding_score=0.0,
+            semantic_score=0.0,
+            min_grounding_score=min_grounding_score,
+            source_refetched=primary_refetched,
+        ),
+    )
 
 
 async def verify_and_ground_lead_report(
@@ -551,7 +650,7 @@ async def verify_and_ground_lead_report(
 
     verified_claims: list[VerifiedClaim] = []
 
-    # Collect all core claims across Executive Summary, News Triggers, Pain Points, and Tech-Stack
+    # Collect prose claims across Executive Summary, News Triggers, Pain Points, and Infrastructure Needs
     all_claims: list[tuple[str, str]] = []
     if report.executive_summary.strip():
         all_claims.append((report.executive_summary, "executive_summary"))
@@ -561,29 +660,13 @@ async def verify_and_ground_lead_report(
         all_claims.append((p, "pain_point"))
     if report.tech_stack.inferred_infrastructure_needs.strip():
         all_claims.append((report.tech_stack.inferred_infrastructure_needs, "tech_stack"))
-    if report.tech_stack.detected_technologies:
-        tech_summary_claim = (
-            f"{report.company_name} technology stack includes "
-            f"{', '.join(report.tech_stack.detected_technologies[:6])}."
-        )
-        all_claims.append((tech_summary_claim, "tech_stack"))
 
-    # Steps 1, 3, 4: Match each claim to a source, extract passage, and perform semantic + lexical comparison
+    # Steps 1, 3, 4: Match each prose claim to a source, extract passage, and perform semantic + lexical comparison
     for raw_claim, category in all_claims:
         clean_claim = strip_status_prefixes(raw_claim)
         matched_src, passage, grounding_score, semantic_score, refetch_ok = (
             select_best_source_for_claim(clean_claim, report.sources, refetched_corpus)
         )
-
-        # For tech_stack summary claims, also consider confirmed runtime header/script detections
-        if category == "tech_stack" and report.tech_stack.technology_signals:
-            confirmed_ratio = sum(
-                1 for t in report.tech_stack.technology_signals if t.detection_status == "confirmed"
-            ) / max(len(report.tech_stack.technology_signals), 1)
-            if confirmed_ratio >= 0.5 and refetch_ok:
-                grounding_score = round(max(grounding_score, 0.50), 2)
-                semantic_score = round(max(semantic_score, 0.50), 2)
-
         status = classify_verification_status(
             grounding_score=grounding_score,
             semantic_score=semantic_score,
@@ -603,6 +686,60 @@ async def verify_and_ground_lead_report(
                 verification_status=status,
             )
         )
+
+    # Verify each detected technology individually so confirmed technologies never mask unbacked ones
+    tech_status_by_name: dict[str, str] = {}
+    for tech_name in report.tech_stack.detected_technologies:
+        clean_tech = strip_status_prefixes(tech_name)
+        tech_vc = _verify_single_technology(
+            clean_tech,
+            report=report,
+            refetched_corpus=refetched_corpus,
+            min_grounding_score=settings.min_grounding_score,
+        )
+        verified_claims.append(tech_vc)
+        tech_status_by_name[clean_tech.lower()] = tech_vc.verification_status
+
+    # Apply policy to individual detected_technologies and technology_signals
+    updated_detected_techs: list[str] = []
+    for tech_name in report.tech_stack.detected_technologies:
+        clean_tech = strip_status_prefixes(tech_name)
+        t_status = tech_status_by_name.get(clean_tech.lower(), "inferred_hypothesis")
+        if t_status == "inferred_hypothesis":
+            if settings.unverified_claim_policy == "discard":
+                continue
+            updated_detected_techs.append(f"{HYPOTHESIS_PREFIX}{clean_tech}")
+        elif t_status == "partially_supported":
+            updated_detected_techs.append(f"{PARTIALLY_SUPPORTED_PREFIX}{clean_tech}")
+        else:
+            updated_detected_techs.append(clean_tech)
+
+    updated_tech_signals = []
+    for sig in report.tech_stack.technology_signals:
+        clean_sig_name = strip_status_prefixes(sig.name)
+        t_status = tech_status_by_name.get(clean_sig_name.lower(), sig.detection_status)
+        if t_status == "inferred_hypothesis":
+            if settings.unverified_claim_policy == "discard":
+                continue
+            updated_tech_signals.append(
+                sig.model_copy(
+                    update={
+                        "detection_status": "suspected",
+                        "confidence_score": min(sig.confidence_score, 0.35),
+                    }
+                )
+            )
+        elif t_status == "partially_supported":
+            updated_tech_signals.append(
+                sig.model_copy(
+                    update={
+                        "detection_status": "suspected",
+                        "confidence_score": min(sig.confidence_score, 0.65),
+                    }
+                )
+            )
+        else:
+            updated_tech_signals.append(sig)
 
     # Step 5: Apply separate labeling for partially supported vs. unverified claims across all sections
     exec_records = [vc for vc in verified_claims if vc.category == "executive_summary"]
@@ -654,7 +791,11 @@ async def verify_and_ground_lead_report(
             "recent_news_and_triggers": updated_news,
             "identified_pain_points": updated_pains,
             "tech_stack": report.tech_stack.model_copy(
-                update={"inferred_infrastructure_needs": updated_infra_needs}
+                update={
+                    "detected_technologies": updated_detected_techs,
+                    "technology_signals": updated_tech_signals,
+                    "inferred_infrastructure_needs": updated_infra_needs,
+                }
             ),
             "verified_claims": verified_claims,
         }

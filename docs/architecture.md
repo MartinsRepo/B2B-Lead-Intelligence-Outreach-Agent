@@ -95,20 +95,20 @@ To overcome the limitations of simple static HTML scraping on modern B2B website
 
 To ensure that a valid HTTP/HTTPS URL actually backs the specific claims made across the entire report (rather than merely pointing to a generic homepage), [`src/lead_agent/fact_checker.py`](../src/lead_agent/fact_checker.py) executes a 5-step verification pipeline before the final `LeadReport` is returned:
 
-1. **Full-Report Claim Coverage (`verify_and_ground_lead_report`):** Audits all four core claim categories in `LeadReport`:
+1. **Full-Report & Individual Technology Coverage (`verify_and_ground_lead_report` & `_verify_single_technology`):** Audits all four core claim categories in `LeadReport`:
    - `executive_summary` (`category="executive_summary"`)
    - `recent_news_and_triggers` (`category="news_trigger"`)
    - `identified_pain_points` (`category="pain_point"`)
-   - `tech_stack` (`category="tech_stack"`, covering both `inferred_infrastructure_needs` and detected technology stack claims)
+   - `tech_stack` (`category="tech_stack"`, auditing `inferred_infrastructure_needs` plus **every individual technology in `detected_technologies` separately** via `_verify_single_technology`, ensuring that confirmed technologies never mask an individual unbacked technology claim).
 2. **Live Source Re-Fetching as a Hard Prerequisite (`refetch_sources_corpus` & `RefetchedSourceDocument`):** Re-fetches the cited URLs (`httpx.AsyncClient` + `extract_clean_page_data`) and records `source_refetched: bool`. **A claim can never achieve `verification_status="verified"` unless the live HTTP re-fetch succeeded (`source_refetched=True`)**; if a source cannot be re-fetched, the claim is capped at `partially_supported` or `inferred_hypothesis`.
 3. **Passage Extraction & Semantic Verification (`extract_best_matching_passage` & `compute_semantic_similarity`):** Splits the re-fetched document into sliding sentence windows and evaluates both lexical/stem coverage and **semantic similarity** (B2B domain semantic concept clusters for synonym/paraphrase matching, character 3-gram cosine similarity, and **negation/contradiction penalty detection**).
-4. **3-Tier Classification (`classify_verification_status`):** Computes `grounding_score` and `semantic_score` (`0.00–1.00`) and classifies each claim as:
+4. **3-Tier Classification & Fail-Closed Default (`classify_verification_status`):** Computes `grounding_score` and `semantic_score` (`0.00–1.00`) and classifies each claim as:
    - `verified` (`✅ Verified in Re-Fetched Source`, requires `source_refetched=True` and strong lexical + semantic coverage)
    - `partially_supported` (`⚠️ Partially Supported`)
-   - `inferred_hypothesis` (`🔍 Unverified / Hypothesis`, when below `min_grounding_score`)
+   - `inferred_hypothesis` (`🔍 Unverified / Hypothesis`, when below `min_grounding_score`, or as the **fail-closed default** whenever a claim has no matching verification record).
 5. **Separate Labeling & Policy Enforcement (`_apply_unverified_policy_to_claims` & `annotate_statement_by_status`):**
-   - Partially supported claims are explicitly prefixed with `"[Partially Supported] "`.
-   - Unverifiable claims (`inferred_hypothesis`) are either prefixed with `"[Hypothesis / Inferred] "` or discarded (`settings.unverified_claim_policy = "discard"`). Every audited claim is stored in `report.verified_claims` (`list[VerifiedClaim]`) and rendered in the UI's **5-Step Fact-Check & Semantic Claim Grounding Audit** view.
+   - Partially supported claims and technologies are explicitly prefixed with `"[Partially Supported] "`.
+   - Unverifiable claims and technologies (`inferred_hypothesis`) are either prefixed with `"[Hypothesis / Inferred] "` (and downgraded to `detection_status="suspected"`) or discarded (`settings.unverified_claim_policy = "discard"`). Every audited claim is stored in `report.verified_claims` (`list[VerifiedClaim]`) and rendered in the UI's **5-Step Fact-Check & Semantic Claim Grounding Audit** view.
 
 ---
 

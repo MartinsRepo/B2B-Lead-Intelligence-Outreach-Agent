@@ -61,7 +61,7 @@ B2B-Lead-Intelligence-Outreach-Agent/
 │       ├── research_engine.py      # Multi-source news aggregator, JSON-LD/SPA extractor & source scoring
 │       ├── web_scraper.py          # Website & multi-channel press scraper
 │       └── tech_parser.py          # Tech fingerprinting & careers page parser
-├── tests/                          # Comprehensive unit & integration test suite (63 tests)
+├── tests/                          # Comprehensive unit & integration test suite (65 tests)
 ├── ui/
 │   └── app.py                      # Streamlit production UI & guardrail control plane
 ├── .env.example                    # Environment variable template
