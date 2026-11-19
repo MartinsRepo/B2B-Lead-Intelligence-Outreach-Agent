@@ -326,7 +326,7 @@ def render_report_tabs(report: LeadReport, context: LeadRunContext) -> None:
     """Render the four primary analysis and observability tabs."""
     tab_pitch, tab_intel, tab_obs, tab_json = st.tabs(
         [
-            "🔥 Outreach Synthesis (Baseline vs. Multi-Agent)",
+            "🔥 Outreach & Phone Call Brief",
             "🏢 Company & Tech-Stack Intelligence",
             "📊 Token & Cost Observability",
             "🧩 Deterministic JSON (LeadReport)",
@@ -339,28 +339,40 @@ def render_report_tabs(report: LeadReport, context: LeadRunContext) -> None:
         )
         st.info(f"**Recommended Subject Line:** `{report.outreach.subject_line}`")
 
-        col_before, col_after = st.columns(2)
-        with col_before:
-            st.markdown("#### ❌ Standard Single-Prompt Baseline")
-            st.caption("Unresearched, generic cold outreach without live press or tech-stack grounding.")
-            st.code(report.outreach.generic_ai_message, language="text")
-
-        with col_after:
+        col_left, col_right = st.columns([6, 5], gap="large")
+        with col_left:
             st.markdown("#### ✅ Multi-Agent Grounded Outreach Pitch")
             st.caption(
-                "Synthesized by the Outreach Copywriter Agent (`gpt-6.2-sol`) using live news triggers, "
+                "Synthesized by the Outreach Copywriter Agent (`gpt-6.2-sol`) using verified news triggers, "
                 "job-board hiring signals, and detected tech-stack bottlenecks."
             )
             st.success(report.outreach.hyper_personalized_pitch)
 
+        with col_right:
+            with st.container(border=True):
+                st.markdown("##### 💬 Direct Message / Short-Form Icebreaker (<300 chars)")
+                st.write(f"> {report.outreach.icebreaker_hook}")
+
+            with st.container(border=True):
+                st.markdown("##### 🤝 Low-Friction Call to Action (CTA)")
+                st.write(f"> {report.outreach.call_to_action}")
+
         st.divider()
-        col_hook, col_cta = st.columns(2)
-        with col_hook:
-            st.markdown("##### 💬 Direct Message / Short-Form Icebreaker (<300 chars)")
-            st.write(f"> {report.outreach.icebreaker_hook}")
-        with col_cta:
-            st.markdown("##### 🤝 Low-Friction Call to Action (CTA)")
-            st.write(f"> {report.outreach.call_to_action}")
+        with st.container(border=True):
+            st.markdown("#### 📞 Short Phone Call Memory Notices (Quick Call Cheat-Sheet)")
+            st.caption(
+                "Key talking points, tech-stack cues, and discovery prompts to keep in front of you during a live call."
+            )
+            if report.outreach.phone_call_bullet_points:
+                for bullet in report.outreach.phone_call_bullet_points:
+                    st.markdown(f"- {bullet}")
+            else:
+                st.markdown(
+                    f"- **Opening Trigger:** Reference *{report.recent_news_and_triggers[0]}*\n"
+                    f"- **Pain-Point Hypothesis:** Validate *{report.identified_pain_points[0]}*\n"
+                    f"- **Tech-Stack Context:** Mention `{', '.join(report.tech_stack.detected_technologies[:4]) or 'core stack'}`\n"
+                    f"- **Next-Step Close:** {report.outreach.call_to_action}"
+                )
 
     with tab_intel:
         st.markdown("### 📋 Executive Summary")

@@ -320,6 +320,31 @@ async def run_lead_intelligence_pipeline(
         run_context=run_context,
     )
 
+    # Ensure phone_call_bullet_points are always populated for the live call cheat-sheet
+    if not report.outreach.phone_call_bullet_points:
+        top_trigger = report.recent_news_and_triggers[0]
+        top_pain = report.identified_pain_points[0]
+        top_techs = ", ".join(report.tech_stack.detected_technologies[:5]) or "current cloud stack"
+        top_role = (
+            report.tech_stack.hiring_signals[0]
+            if report.tech_stack.hiring_signals
+            else "active engineering initiatives"
+        )
+        synthesized_bullets = [
+            f"Opening Trigger Hook: Reference '{top_trigger}' to establish immediate relevance.",
+            f"Tech & Hiring Context: Mention their footprint in {top_techs} alongside '{top_role}'.",
+            f"Core Pain-Point Hypothesis: Validate whether '{top_pain}' is currently impacting team velocity.",
+            f"Key Discovery Question: 'As {report.company_name} scales these initiatives, how is your team currently handling {report.tech_stack.inferred_infrastructure_needs.lower().rstrip('.')}?'",
+            f"Low-Friction Close: {report.outreach.call_to_action}",
+        ]
+        report = report.model_copy(
+            update={
+                "outreach": report.outreach.model_copy(
+                    update={"phone_call_bullet_points": synthesized_bullets}
+                )
+            }
+        )
+
     # Ensure Output Guardrail validation passes
     postcheck = validate_lead_output(report, settings=settings)
     if not postcheck.is_valid:

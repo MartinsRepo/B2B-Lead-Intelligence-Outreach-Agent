@@ -142,16 +142,14 @@ class TechStackAnalysis(BaseModel):
 
 
 class OutreachPitch(BaseModel):
-    """B2B outreach deliverables including a Baseline vs. Multi-Agent Grounded comparison."""
+    """B2B outreach deliverables including email pitch, DM hook, CTA, and phone call memory notices."""
 
     subject_line: str = Field(
         description="High-converting, specific B2B cold email subject line."
     )
     generic_ai_message: str = Field(
-        description=(
-            "Standard single-prompt baseline: a typical generic, superficial AI outreach message "
-            "without live press or tech-stack grounding."
-        )
+        default="",
+        description="Deprecated/optional baseline message field kept for backward compatibility.",
     )
     hyper_personalized_pitch: str = Field(
         description=(
@@ -164,6 +162,15 @@ class OutreachPitch(BaseModel):
     )
     call_to_action: str = Field(
         description="Low-friction, value-first Call to Action (CTA)."
+    )
+    phone_call_bullet_points: list[str] = Field(
+        default_factory=list,
+        description=(
+            "4-5 concise bullet-point memory notices for a short B2B phone call: "
+            "1) Opening trigger/news hook, 2) Key tech-stack or hiring signal to mention, "
+            "3) Core pain-point hypothesis, 4) High-impact discovery question to ask, "
+            "5) Low-friction next step."
+        ),
     )
 
 
