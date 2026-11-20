@@ -5,6 +5,7 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   lint-and-test:
@@ -29,9 +30,12 @@ jobs:
 
       - name: Lint with Ruff
         run: |
-          ruff check src tests ui
+          python -m ruff check src tests ui
 
-      - name: Run unit tests with Pytest
+      - name: Run all unit and integration tests with Pytest
         run: |
-          pytest -v
-
+          python -m pytest -v --tb=short --junitxml=pytest-report.xml | tee pytest-output.txt
+          echo "## 🧪 Pytest Execution Summary (Python ${{ matrix.python-version }})" >> $GITHUB_STEP_SUMMARY
+          echo '```text' >> $GITHUB_STEP_SUMMARY
+          tail -n 25 pytest-output.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY

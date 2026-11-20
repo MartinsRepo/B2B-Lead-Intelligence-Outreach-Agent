@@ -44,7 +44,9 @@ For a deep dive into the internals, model alias resolution, guardrail policy rul
 B2B-Lead-Intelligence-Outreach-Agent/
 ├── .github/workflows/ci.yml        # GitHub Actions CI (Ruff + Pytest)
 ├── docs/
-│   └── architecture.md             # Detailed technical architecture documentation
+│   ├── architecture.md             # Detailed technical architecture documentation
+│   ├── failed_tests.md             # Historical failed-test post-mortems & fail-closed negative test catalog
+│   └── test_report.md              # Full 66-test execution report & coverage breakdown
 ├── gallery/
 │   └── b2b_latest.png              # Pictures
 ├── src/lead_agent/
@@ -64,7 +66,7 @@ B2B-Lead-Intelligence-Outreach-Agent/
 │       ├── research_engine.py      # Multi-source news aggregator, JSON-LD/SPA extractor & source scoring
 │       ├── web_scraper.py          # Website & multi-channel press scraper
 │       └── tech_parser.py          # Tech fingerprinting & careers page parser
-├── tests/                          # Comprehensive unit & integration test suite (65 tests)
+├── tests/                          # Comprehensive unit & integration test suite (66 tests)
 ├── ui/
 │   └── app.py                      # Streamlit production UI & guardrail control plane
 ├── .env.example                    # Environment variable template
@@ -117,6 +119,8 @@ Run the automated test suite and code quality checks:
 python -m pytest -v
 python -m ruff check src tests ui
 ```
+
+Detailed test documentation is available in [`docs/test_report.md`](docs/test_report.md) and [`docs/failed_tests.md`](docs/failed_tests.md).
 
 ---
 

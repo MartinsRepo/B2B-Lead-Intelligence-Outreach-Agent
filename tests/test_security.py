@@ -17,6 +17,7 @@ from lead_agent.schemas import (
 from lead_agent.security import (
     SSRFBlockedError,
     is_ip_blocked,
+    pinned_dns_context,
     safe_http_get,
     validate_url_ssrf,
 )
@@ -74,16 +75,26 @@ def test_fail_closed_dns_policy_blocks_unresolvable_domains_by_default() -> None
     def failing_dns_resolver(host: str) -> list[str]:
         raise socket.gaierror(f"NXDOMAIN for {host}")
 
+    def timeout_dns_resolver(host: str) -> list[str]:
+        raise TimeoutError(f"DNS timeout for {host}")
+
     def empty_dns_resolver(_host: str) -> list[str]:
         return []
 
-    # Default strict_dns_failure=True must fail closed when DNS fails or returns no IPs
+    # Unconditional Fail-Closed DNS: must block on socket.gaierror, TimeoutError, and empty IP list
     res_exception = validate_url_ssrf(
         "https://nonexistent.invalid.example/news",
         dns_resolver=failing_dns_resolver,
     )
     assert res_exception.is_safe is False
     assert "Fail-Closed" in res_exception.reason
+
+    res_timeout = validate_url_ssrf(
+        "https://timeout.invalid.example/news",
+        dns_resolver=timeout_dns_resolver,
+    )
+    assert res_timeout.is_safe is False
+    assert "Fail-Closed" in res_timeout.reason
 
     res_empty = validate_url_ssrf(
         "https://empty.invalid.example/news",
@@ -137,6 +148,10 @@ async def test_simulated_toctou_dns_rebinding_prevented_by_ip_pinning() -> None:
     wire_snapshots: list[dict[str, object]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        # Verify socket.getaddrinfo itself is also pinned to '93.184.216.34' during client.send!
+        resolved_during_send = socket.getaddrinfo("toctou.example.com", 8443, type=socket.SOCK_STREAM)
+        assert all(info[4][0] == "93.184.216.34" for info in resolved_during_send)
+
         # Capture the exact URL, Host header, and TLS SNI extension at transport send time
         wire_snapshots.append(
             {
@@ -184,6 +199,49 @@ async def test_simulated_toctou_dns_rebinding_prevented_by_ip_pinning() -> None:
 
     # 4. Canonical logical URL is restored on the returned response object
     assert str(resp.url) == "https://toctou.example.com:8443/press?page=1"
+
+    # 5. Also verify pinned_dns_context standalone locks socket.getaddrinfo to the pinned IP
+    with pinned_dns_context("any-unresolvable-host.example.invalid", "93.184.216.34"):
+        infos = socket.getaddrinfo("any-unresolvable-host.example.invalid", 443)
+        assert infos[0][4][0] == "93.184.216.34"
+
+
+async def test_pinned_ip_dual_stack_failover_without_second_dns_lookup() -> None:
+    """Verify that if a host resolves to multiple validated public IPs (e.g. IPv6 + IPv4)
+    and the first IP fails to connect, `safe_http_get` fails over to the second pre-validated
+    IP without performing a second DNS lookup (preventing TOCTOU rebinding on failover).
+    """
+    dns_calls = 0
+
+    def dual_stack_rebinding_dns(_host: str) -> list[str]:
+        nonlocal dns_calls
+        dns_calls += 1
+        if dns_calls == 1:
+            return ["2606:2800:220:1:248:1893:25c8:1946", "93.184.216.34"]
+        return ["127.0.0.1"]
+
+    attempted_hosts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempted_hosts.append(request.url.host)
+        if request.url.host == "2606:2800:220:1:248:1893:25c8:1946":
+            raise httpx.ConnectError("IPv6 route unreachable")
+        assert request.headers["Host"] == "dualstack.example.com"
+        assert request.extensions.get("sni_hostname") == "dualstack.example.com"
+        return httpx.Response(200, text="Connected via pre-validated IPv4 fallback")
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        resp = await safe_http_get(
+            "https://dualstack.example.com/status",
+            client,
+            dns_resolver=dual_stack_rebinding_dns,
+        )
+
+    assert dns_calls == 1
+    assert attempted_hosts == ["2606:2800:220:1:248:1893:25c8:1946", "93.184.216.34"]
+    assert resp.status_code == 200
+    assert str(resp.url) == "https://dualstack.example.com/status"
 
 
 async def test_same_domain_redirect_dns_rebinding_blocked_on_second_hop() -> None:

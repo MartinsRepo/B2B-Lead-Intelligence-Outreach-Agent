@@ -216,6 +216,17 @@ async def fetch_company_news_and_press_impl(
     4. External Google News RSS search for third-party coverage & press wires
     """
     normalized_url = normalize_target_url(company_or_domain)
+    initial_ssrf = validate_url_ssrf(normalized_url)
+    if not initial_ssrf.is_safe:
+        return {
+            "company_or_domain": company_or_domain,
+            "error": initial_ssrf.reason,
+            "channels_combined": [],
+            "articles_found": 0,
+            "average_composite_score": 0.0,
+            "articles": [],
+        }
+
     parsed = urlparse(normalized_url)
     domain = (parsed.netloc or company_or_domain.strip()).removeprefix("www.")
     company_name_query = domain.split(".")[0].replace("-", " ").title()
@@ -332,6 +343,8 @@ async def fetch_company_news_and_press_impl(
             f'"{company_name_query}" OR "{domain}"', client
         )
         for ext in external_articles[:4]:
+            if not validate_url_ssrf(ext["url"]).is_safe:
+                continue
             evaluated_sources.append(
                 evaluate_source_quality(
                     title=ext["title"],

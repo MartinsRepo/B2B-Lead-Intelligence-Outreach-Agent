@@ -292,11 +292,12 @@ async def run_lead_intelligence_pipeline(
         key = tech_name.lower()
         if key not in existing_signals:
             in_jobs = key in hiring_blob
-            default_conf = 0.72 if in_jobs else 0.88
+            # Default un-signaled items to suspected (<0.80) until verified by fact_checker
+            default_conf = 0.72 if in_jobs else 0.75
             default_src = (
                 f"job_posting_requirement ({precheck.normalized_target}/careers)"
                 if in_jobs
-                else f"script_or_dom_asset ({precheck.normalized_target})"
+                else f"inferred_tech_mention ({precheck.normalized_target})"
             )
             existing_signals[key] = DetectedTechnology(
                 name=tech_name,

@@ -12,6 +12,7 @@ from lead_agent.fact_checker import (
     verify_and_ground_lead_report,
 )
 from lead_agent.schemas import (
+    DetectedTechnology,
     LeadReport,
     OutreachPitch,
     SourceCitation,
@@ -196,9 +197,36 @@ def test_unmapped_claims_default_to_inferred_hypothesis_fail_closed() -> None:
     )
     assert res_mark == [f"{HYPOTHESIS_PREFIX}Unmapped claim without verification record"]
 
+    # When discard policy is active and a verified claim exists alongside an unmapped claim,
+    # the unmapped claim must be discarded (never kept as 'verified').
+    from lead_agent.schemas import VerifiedClaim
+
+    verified_rec = VerifiedClaim(
+        claim="Verified claim with record",
+        source_url="https://acmecloud.io/news",
+        source_refetched=True,
+        verification_status="verified",
+    )
+    res_discard = _apply_unverified_policy_to_claims(
+        ["Verified claim with record", "Unmapped mystery claim"],
+        verified_records=[verified_rec],
+        policy="discard",
+    )
+    assert res_discard == ["Verified claim with record"]
+
+    # Also verify VerifiedClaim schema defaults are fail-closed ('inferred_hypothesis' and source_refetched=False)
+    default_vc = VerifiedClaim(
+        claim="Default status check",
+        source_url="https://acmecloud.io/news",
+    )
+    assert default_vc.verification_status == "inferred_hypothesis"
+    assert default_vc.source_refetched is False
+
 
 async def test_individual_technology_verification_prevents_masking_unbacked_tech() -> None:
-    """Verify that 3 valid technologies do NOT mask 1 unbacked technology claim."""
+    """Verify that 3 valid technologies do NOT mask 1 unbacked technology claim, even if the LLM
+    self-reported the unbacked technology as 'confirmed' (0.95) in technology_signals.
+    """
     report = _build_test_report()
     report = report.model_copy(
         update={
@@ -209,7 +237,27 @@ async def test_individual_technology_verification_prevents_masking_unbacked_tech
                         "Snowflake",
                         "Kubernetes",
                         "QuantumMainframeOS",
-                    ]
+                    ],
+                    "technology_signals": [
+                        DetectedTechnology(
+                            name="Kafka",
+                            confidence_score=0.92,
+                            signal_source="job_posting_requirement",
+                            detection_status="confirmed",
+                        ),
+                        DetectedTechnology(
+                            name="QuantumMainframeOS",
+                            confidence_score=0.95,
+                            signal_source="script_asset",
+                            detection_status="confirmed",
+                        ),
+                        DetectedTechnology(
+                            name="SecretCobolEngine",
+                            confidence_score=0.91,
+                            signal_source="http_header",
+                            detection_status="confirmed",
+                        ),
+                    ],
                 }
             )
         }
@@ -222,7 +270,7 @@ async def test_individual_technology_verification_prevents_masking_unbacked_tech
             "with low-latency Kafka stream replication."
         )
 
-    # 1. With mark_as_hypothesis: QuantumMainframeOS is individually flagged as hypothesis
+    # 1. With mark_as_hypothesis: QuantumMainframeOS and SecretCobolEngine are individually flagged
     marked_report = await verify_and_ground_lead_report(
         report,
         settings=AgentSettings(unverified_claim_policy="mark_as_hypothesis"),
@@ -242,8 +290,16 @@ async def test_individual_technology_verification_prevents_masking_unbacked_tech
     assert tech_claims["Technology: Snowflake"] == "verified"
     assert tech_claims["Technology: Kubernetes"] == "verified"
     assert tech_claims["Technology: QuantumMainframeOS"] == "inferred_hypothesis"
+    assert tech_claims["Technology: SecretCobolEngine"] == "inferred_hypothesis"
 
-    # 2. With discard policy: QuantumMainframeOS is removed while the 3 verified technologies remain
+    # Both unbacked signals in technology_signals must be downgraded to 'suspected' (<= 0.35)
+    sig_map = {s.name: s for s in marked_report.tech_stack.technology_signals}
+    assert sig_map["QuantumMainframeOS"].detection_status == "suspected"
+    assert sig_map["QuantumMainframeOS"].confidence_score <= 0.35
+    assert sig_map["SecretCobolEngine"].detection_status == "suspected"
+    assert sig_map["SecretCobolEngine"].confidence_score <= 0.35
+
+    # 2. With discard policy: unbacked technologies are removed from both lists
     discarded_report = await verify_and_ground_lead_report(
         report,
         settings=AgentSettings(unverified_claim_policy="discard"),
@@ -254,4 +310,5 @@ async def test_individual_technology_verification_prevents_masking_unbacked_tech
         "Snowflake",
         "Kubernetes",
     ]
+    assert [s.name for s in discarded_report.tech_stack.technology_signals] == ["Kafka"]
 

@@ -2,13 +2,57 @@
 
 from __future__ import annotations
 
+import contextvars
 import ipaddress
 import socket
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from urllib.parse import urljoin, urlparse, urlunparse
 
 import httpx
+
+_PINNED_DNS_MAP: contextvars.ContextVar[dict[str, str] | None] = contextvars.ContextVar(
+    "_PINNED_DNS_MAP", default=None
+)
+_ORIGINAL_GETADDRINFO = socket.getaddrinfo
+
+
+def _ssrf_pinned_getaddrinfo(
+    host: str | bytes | None,
+    port: str | bytes | int | None,
+    family: int = 0,
+    type: int = 0,
+    proto: int = 0,
+    flags: int = 0,
+):
+    """Socket getaddrinfo wrapper that enforces pinned IP resolution within `pinned_dns_context`."""
+    pinned_map = _PINNED_DNS_MAP.get()
+    if pinned_map and host is not None:
+        host_str = (
+            host.decode("ascii", errors="ignore") if isinstance(host, bytes) else str(host)
+        ).lower().strip(".")
+        if host_str in pinned_map:
+            pinned_ip = pinned_map[host_str]
+            return _ORIGINAL_GETADDRINFO(pinned_ip, port, family, type, proto, flags)
+    return _ORIGINAL_GETADDRINFO(host, port, family, type, proto, flags)
+
+
+socket.getaddrinfo = _ssrf_pinned_getaddrinfo  # type: ignore[assignment]
+
+
+@contextmanager
+def pinned_dns_context(hostname: str, pinned_ip: str) -> Iterator[None]:
+    """Bind `socket.getaddrinfo` for `hostname` strictly to the pre-validated `pinned_ip`."""
+    norm_host = hostname.lower().strip(".")
+    clean_ip = pinned_ip.strip().strip("[]")
+    current = dict(_PINNED_DNS_MAP.get() or {})
+    current[norm_host] = clean_ip
+    token = _PINNED_DNS_MAP.set(current)
+    try:
+        yield
+    finally:
+        _PINNED_DNS_MAP.reset(token)
 
 BLOCKED_HOSTNAMES: frozenset[str] = frozenset(
     {
@@ -112,7 +156,7 @@ def is_ip_blocked(ip_str: str) -> tuple[bool, str]:
 
 def resolve_hostname_ips(hostname: str) -> list[str]:
     """Resolve all IPv4 and IPv6 addresses for `hostname` via the system DNS resolver."""
-    infos = socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
+    infos = _ORIGINAL_GETADDRINFO(hostname, None, type=socket.SOCK_STREAM)
     ips: list[str] = []
     for info in infos:
         sockaddr = info[4]
@@ -128,9 +172,8 @@ def validate_url_ssrf(
     block_private_ips: bool = True,
     resolve_dns: bool = True,
     dns_resolver: Callable[[str], list[str]] | None = None,
-    strict_dns_failure: bool = True,
 ) -> SSRFCheckOutcome:
-    """Validate a URL against SSRF vectors using a Fail-Closed DNS resolution strategy by default."""
+    """Validate a URL against SSRF vectors using an unconditional Fail-Closed DNS strategy."""
     cleaned = url.strip()
     if not cleaned:
         return SSRFCheckOutcome(
@@ -207,27 +250,25 @@ def validate_url_ssrf(
             reason=f"Host '{hostname}' is a private/local address and is blocked by the SSRF Guardrail.",
         )
 
-    # 3. Resolve DNS (A/AAAA records) with Fail-Closed enforcement and verify every resolved IP is public
+    # 3. Resolve DNS (A/AAAA records) with unconditional Fail-Closed error handling
     resolved_ips: list[str] = []
     if resolve_dns:
         resolver_fn = dns_resolver or resolve_hostname_ips
         try:
             resolved_ips = resolver_fn(hostname)
-        except Exception as exc:
-            if strict_dns_failure:
-                return SSRFCheckOutcome(
-                    is_safe=False,
-                    url=cleaned,
-                    hostname=hostname,
-                    resolved_ips=(),
-                    reason=(
-                        f"Fail-Closed SSRF Guardrail blocked host '{hostname}': "
-                        f"DNS resolution failed ({exc!s})."
-                    ),
-                )
-            resolved_ips = []
+        except (socket.gaierror, socket.herror, TimeoutError, OSError, UnicodeError, Exception) as exc:
+            return SSRFCheckOutcome(
+                is_safe=False,
+                url=cleaned,
+                hostname=hostname,
+                resolved_ips=(),
+                reason=(
+                    f"Fail-Closed SSRF Guardrail blocked host '{hostname}': "
+                    f"DNS resolution failed ({exc!s})."
+                ),
+            )
 
-        if strict_dns_failure and not resolved_ips:
+        if not resolved_ips:
             return SSRFCheckOutcome(
                 is_safe=False,
                 url=cleaned,
@@ -267,7 +308,6 @@ def filter_safe_external_urls(
     block_private_ips: bool = True,
     resolve_dns: bool = True,
     dns_resolver: Callable[[str], list[str]] | None = None,
-    strict_dns_failure: bool = True,
 ) -> list[str]:
     """Filter a list of discovered RSS, press, or external source URLs, keeping only SSRF-safe URLs."""
     safe_urls: list[str] = []
@@ -277,7 +317,6 @@ def filter_safe_external_urls(
             block_private_ips=block_private_ips,
             resolve_dns=resolve_dns,
             dns_resolver=dns_resolver,
-            strict_dns_failure=strict_dns_failure,
         )
         if check.is_safe and check.url not in safe_urls:
             safe_urls.append(check.url)
@@ -329,16 +368,14 @@ async def safe_http_get(
     timeout: float | None = None,
     headers: dict[str, str] | None = None,
     block_private_ips: bool = True,
-    resolve_dns: bool = True,
     dns_resolver: Callable[[str], list[str]] | None = None,
-    strict_dns_failure: bool = True,
-    pin_resolved_ip: bool = True,
 ) -> httpx.Response:
-    """Execute an HTTP GET request with Fail-Closed SSRF validation, IP pinning, and per-hop redirect checks.
+    """Execute an HTTP GET request with Fail-Closed DNS validation, IP pinning, and per-hop redirect checks.
 
     To eliminate DNS-Rebinding / TOCTOU vulnerabilities between `validate_url_ssrf` and socket connect:
-    1. Resolves and validates the target hostname's IP address once per hop (`strict_dns_failure=True`).
-    2. Binds the outgoing HTTPX request directly to the validated `pinned_ip` (`https://<pinned_ip>/...`).
+    1. Always resolves and validates the target hostname's IP address once per hop when `block_private_ips=True`.
+    2. Binds the outgoing HTTPX request directly to the validated `pinned_ip` (`https://<pinned_ip>/...`)
+       AND locks `socket.getaddrinfo` via `pinned_dns_context(orig_hostname, pinned_ip)`.
     3. Preserves the original `Host` header (`Host: <hostname>[:port]`) and binds TLS SNI / X.509
        certificate hostname verification to the original hostname via `request.extensions["sni_hostname"]`.
     4. Restores `response.request.url` to the canonical `current_url` so downstream relative URL joins
@@ -350,35 +387,56 @@ async def safe_http_get(
         check = validate_url_ssrf(
             current_url,
             block_private_ips=block_private_ips,
-            resolve_dns=resolve_dns,
+            resolve_dns=block_private_ips,
             dns_resolver=dns_resolver,
-            strict_dns_failure=strict_dns_failure,
         )
         if not check.is_safe:
             raise SSRFBlockedError(check.reason)
+
+        if block_private_ips and not check.resolved_ips:
+            raise SSRFBlockedError(
+                f"Fail-Closed SSRF Guardrail blocked '{current_url}': "
+                "Cannot establish connection without a verified resolved public IP address."
+            )
 
         base_req_headers: dict[str, str] = dict(client.headers)
         if headers:
             base_req_headers.update(headers)
 
-        if pin_resolved_ip and check.resolved_ips:
-            pinned_ip = check.resolved_ips[0]
-            target_url, orig_hostname, req_headers = build_ip_pinned_url_and_headers(
-                current_url,
-                pinned_ip=pinned_ip,
-                base_headers=base_req_headers,
-            )
-            request = client.build_request(
-                "GET",
-                target_url,
-                headers=req_headers,
-                timeout=timeout if timeout is not None else client.timeout,
-                extensions={
-                    "sni_hostname": orig_hostname,
-                    "pinned_ip": pinned_ip,
-                    "logical_url": current_url,
-                },
-            )
+        if block_private_ips and check.resolved_ips:
+            response: httpx.Response | None = None
+            last_connect_exc: httpx.HTTPError | None = None
+            for pinned_ip in check.resolved_ips:
+                target_url, orig_hostname, req_headers = build_ip_pinned_url_and_headers(
+                    current_url,
+                    pinned_ip=pinned_ip,
+                    base_headers=base_req_headers,
+                )
+                request = client.build_request(
+                    "GET",
+                    target_url,
+                    headers=req_headers,
+                    timeout=timeout if timeout is not None else client.timeout,
+                    extensions={
+                        "sni_hostname": orig_hostname,
+                        "pinned_ip": pinned_ip,
+                        "logical_url": current_url,
+                    },
+                )
+                try:
+                    with pinned_dns_context(orig_hostname, pinned_ip):
+                        response = await client.send(request, follow_redirects=False)
+                    break
+                except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                    last_connect_exc = exc
+                    continue
+
+            if response is None:
+                if last_connect_exc is not None:
+                    raise last_connect_exc
+                raise SSRFBlockedError(
+                    f"Failed to connect to any validated IP address for '{current_url}'."
+                )
         else:
             request = client.build_request(
                 "GET",
@@ -386,8 +444,8 @@ async def safe_http_get(
                 headers=base_req_headers,
                 timeout=timeout if timeout is not None else client.timeout,
             )
+            response = await client.send(request, follow_redirects=False)
 
-        response = await client.send(request, follow_redirects=False)
         # Restore canonical logical URL on the request so response.url reflects original hostname
         response.request.url = httpx.URL(current_url)
 
@@ -404,9 +462,8 @@ async def safe_http_get(
             redirect_check = validate_url_ssrf(
                 next_url,
                 block_private_ips=block_private_ips,
-                resolve_dns=resolve_dns,
+                resolve_dns=block_private_ips,
                 dns_resolver=dns_resolver,
-                strict_dns_failure=strict_dns_failure,
             )
             if not redirect_check.is_safe:
                 raise SSRFBlockedError(

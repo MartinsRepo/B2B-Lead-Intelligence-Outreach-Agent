@@ -98,7 +98,7 @@ class VerifiedClaim(BaseModel):
         description="HTTP/HTTPS URL of the source against which the claim was verified."
     )
     source_refetched: bool = Field(
-        default=True,
+        default=False,
         description="True only if the source URL was successfully re-fetched over HTTP during verification.",
     )
     matched_excerpt: str = Field(
@@ -118,8 +118,8 @@ class VerifiedClaim(BaseModel):
         description="Combined lexical, entity, and semantic support score (0.0 to 1.0) against the source passage.",
     )
     verification_status: str = Field(
-        default="verified",
-        description="Status: 'verified', 'partially_supported', or 'inferred_hypothesis'.",
+        default="inferred_hypothesis",
+        description="Status: 'verified', 'partially_supported', or 'inferred_hypothesis' (fail-closed default).",
     )
 
 
@@ -128,7 +128,7 @@ class DetectedTechnology(BaseModel):
 
     name: str = Field(description="Name of the detected or inferred technology (e.g., 'Next.js', 'Kubernetes').")
     confidence_score: float = Field(
-        default=0.85,
+        default=0.65,
         ge=0.0,
         le=1.0,
         description="Confidence score (0.0 to 1.0) based on signal provenance and corroboration.",
@@ -146,10 +146,10 @@ class DetectedTechnology(BaseModel):
         description="ISO-8601 UTC timestamp when the technology signal was detected.",
     )
     detection_status: str = Field(
-        default="confirmed",
+        default="suspected",
         description=(
             "Classification: 'confirmed' (sicher erkannt via HTTP headers, script/link assets, or DOM markers, "
-            "confidence >= 0.80) or 'suspected' (vermutet via job postings or body text mentions)."
+            "confidence >= 0.80) or 'suspected' (vermutet via job postings or body text mentions, fail-closed default)."
         ),
     )
 

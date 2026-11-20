@@ -13,6 +13,7 @@ from lead_agent.config import DEFAULT_SETTINGS, AgentSettings
 from lead_agent.context import LeadRunContext
 from lead_agent.schemas import LeadReport, SourceCitation, VerifiedClaim
 from lead_agent.security import safe_http_get
+from lead_agent.tools.tech_parser import parse_tech_signals_detailed
 from lead_agent.tools.web_scraper import DEFAULT_HEADERS, extract_clean_page_data
 
 STOPWORDS: frozenset[str] = frozenset(
@@ -148,6 +149,7 @@ class RefetchedSourceDocument:
     text: str
     refetch_succeeded: bool
     status_code: int = 0
+    detected_runtime_techs: tuple[str, ...] = ()
 
 
 def strip_status_prefixes(text: str) -> str:
@@ -455,12 +457,24 @@ async def refetch_sources_corpus(
                         f"{headings_str}. "
                         f"{page_data.get('body_excerpt', '')}"
                     ).strip(". ")
+                    headers_dict = {k.lower(): v for k, v in resp.headers.items()}
+                    runtime_signals = parse_tech_signals_detailed(
+                        resp.text,
+                        headers=headers_dict,
+                        page_url=str(resp.url),
+                    )
+                    confirmed_runtime = tuple(
+                        str(s["name"])
+                        for s in runtime_signals
+                        if s.get("detection_status") == "confirmed"
+                    )
                     refetch_ok = len(full_text) >= 25
                     corpus[src.url] = RefetchedSourceDocument(
                         url=src.url,
                         text=full_text,
                         refetch_succeeded=refetch_ok,
                         status_code=resp.status_code,
+                        detected_runtime_techs=confirmed_runtime,
                     )
                 else:
                     corpus[src.url] = RefetchedSourceDocument(
@@ -533,11 +547,15 @@ def _verify_single_technology(
     refetched_corpus: dict[str, RefetchedSourceDocument],
     min_grounding_score: float,
 ) -> VerifiedClaim:
-    """Verify an individual technology claim against re-fetched sources and its own runtime signal."""
+    """Verify an individual technology claim strictly against re-fetched source text or re-fetched HTML/headers.
+
+    Never trusts the LLM's self-reported `DetectedTechnology.detection_status == 'confirmed'` unless
+    independently backed by a re-fetched source document.
+    """
     clean_tech = strip_status_prefixes(tech_name)
     tech_pattern = re.compile(rf"(?<![a-zA-Z0-9]){re.escape(clean_tech)}(?![a-zA-Z0-9])", re.I)
 
-    # 1. Check if this specific technology is mentioned in any successfully re-fetched source document
+    # 1. Check if this specific technology is mentioned in any successfully re-fetched source text
     for src in report.sources:
         doc = refetched_corpus.get(src.url)
         if doc is not None and doc.refetch_succeeded and tech_pattern.search(doc.text):
@@ -554,34 +572,26 @@ def _verify_single_technology(
                 verification_status="verified",
             )
 
-    # 2. Check if this specific technology has its own confirmed runtime signal (HTTP header / script / DOM)
-    sig_by_name = {
-        strip_status_prefixes(s.name).lower(): s for s in report.tech_stack.technology_signals
-    }
-    own_signal = sig_by_name.get(clean_tech.lower())
-    any_refetched_src = next(
-        (src for src in report.sources if refetched_corpus.get(src.url, RefetchedSourceDocument("", "", False)).refetch_succeeded),
-        None,
-    )
-    if (
-        own_signal is not None
-        and own_signal.detection_status == "confirmed"
-        and own_signal.confidence_score >= 0.80
-        and any_refetched_src is not None
-    ):
-        return VerifiedClaim(
-            claim=f"Technology: {clean_tech}",
-            category="tech_stack",
-            source_title=any_refetched_src.title,
-            source_url=any_refetched_src.url,
-            source_refetched=True,
-            matched_excerpt=f"Confirmed runtime signal: {own_signal.signal_source}"[:380],
-            semantic_score=own_signal.confidence_score,
-            grounding_score=own_signal.confidence_score,
-            verification_status="verified",
-        )
+    # 2. Check if this specific technology was confirmed in the re-fetched HTML/HTTP headers
+    for src in report.sources:
+        doc = refetched_corpus.get(src.url)
+        if doc is not None and doc.refetch_succeeded:
+            runtime_lower = {t.lower() for t in doc.detected_runtime_techs}
+            if clean_tech.lower() in runtime_lower:
+                return VerifiedClaim(
+                    claim=f"Technology: {clean_tech}",
+                    category="tech_stack",
+                    source_title=src.title,
+                    source_url=src.url,
+                    source_refetched=True,
+                    matched_excerpt=f"Confirmed in re-fetched HTTP headers/DOM assets of {src.url}.",
+                    semantic_score=0.92,
+                    grounding_score=0.92,
+                    verification_status="verified",
+                )
 
-    # 3. Check if mentioned in an un-refetched source snippet (capped at partially_supported)
+    # 3. Check if mentioned in the source snippet (capped at partially_supported even if refetch succeeded,
+    # because the re-fetched full text did not contain the technology!)
     for src in report.sources:
         doc = refetched_corpus.get(src.url)
         refetch_ok = doc.refetch_succeeded if doc is not None else False
@@ -593,12 +603,12 @@ def _verify_single_technology(
                 source_url=src.url,
                 source_refetched=refetch_ok,
                 matched_excerpt=src.snippet[:380],
-                semantic_score=0.60,
-                grounding_score=0.60,
-                verification_status="verified" if refetch_ok else "partially_supported",
+                semantic_score=0.45,
+                grounding_score=0.45,
+                verification_status="partially_supported",
             )
 
-    # 4. Neither backed by re-fetched source text nor confirmed by its own runtime header/script signal
+    # 4. Neither found in re-fetched source text nor in re-fetched HTML/headers nor in snippets
     primary_src = report.sources[0]
     primary_doc = refetched_corpus.get(primary_src.url)
     primary_refetched = primary_doc.refetch_succeeded if primary_doc is not None else False
@@ -687,10 +697,22 @@ async def verify_and_ground_lead_report(
             )
         )
 
-    # Verify each detected technology individually so confirmed technologies never mask unbacked ones
-    tech_status_by_name: dict[str, str] = {}
+    # Verify every technology across both detected_technologies and technology_signals individually
+    all_tech_names: list[str] = []
+    seen_tech_keys: set[str] = set()
     for tech_name in report.tech_stack.detected_technologies:
         clean_tech = strip_status_prefixes(tech_name)
+        if clean_tech.lower() not in seen_tech_keys:
+            seen_tech_keys.add(clean_tech.lower())
+            all_tech_names.append(clean_tech)
+    for sig in report.tech_stack.technology_signals:
+        clean_sig = strip_status_prefixes(sig.name)
+        if clean_sig.lower() not in seen_tech_keys:
+            seen_tech_keys.add(clean_sig.lower())
+            all_tech_names.append(clean_sig)
+
+    tech_status_by_name: dict[str, str] = {}
+    for clean_tech in all_tech_names:
         tech_vc = _verify_single_technology(
             clean_tech,
             report=report,
@@ -700,7 +722,7 @@ async def verify_and_ground_lead_report(
         verified_claims.append(tech_vc)
         tech_status_by_name[clean_tech.lower()] = tech_vc.verification_status
 
-    # Apply policy to individual detected_technologies and technology_signals
+    # Apply policy to individual detected_technologies and technology_signals (Fail-Closed default)
     updated_detected_techs: list[str] = []
     for tech_name in report.tech_stack.detected_technologies:
         clean_tech = strip_status_prefixes(tech_name)
@@ -717,7 +739,7 @@ async def verify_and_ground_lead_report(
     updated_tech_signals = []
     for sig in report.tech_stack.technology_signals:
         clean_sig_name = strip_status_prefixes(sig.name)
-        t_status = tech_status_by_name.get(clean_sig_name.lower(), sig.detection_status)
+        t_status = tech_status_by_name.get(clean_sig_name.lower(), "inferred_hypothesis")
         if t_status == "inferred_hypothesis":
             if settings.unverified_claim_policy == "discard":
                 continue
@@ -742,10 +764,14 @@ async def verify_and_ground_lead_report(
             updated_tech_signals.append(sig)
 
     # Step 5: Apply separate labeling for partially supported vs. unverified claims across all sections
+    # Fail-Closed: any statement without a matching record defaults to 'inferred_hypothesis'
     exec_records = [vc for vc in verified_claims if vc.category == "executive_summary"]
+    exec_status = (
+        exec_records[0].verification_status if exec_records else "inferred_hypothesis"
+    )
     updated_exec_summary = (
-        annotate_statement_by_status(report.executive_summary, exec_records[0].verification_status)
-        if exec_records
+        annotate_statement_by_status(report.executive_summary, exec_status)
+        if report.executive_summary.strip()
         else report.executive_summary
     )
 
@@ -766,12 +792,17 @@ async def verify_and_ground_lead_report(
         if vc.category == "tech_stack"
         and vc.claim == strip_status_prefixes(report.tech_stack.inferred_infrastructure_needs)
     ]
+    infra_status = (
+        tech_infra_records[0].verification_status
+        if tech_infra_records
+        else "inferred_hypothesis"
+    )
     updated_infra_needs = (
         annotate_statement_by_status(
             report.tech_stack.inferred_infrastructure_needs,
-            tech_infra_records[0].verification_status,
+            infra_status,
         )
-        if tech_infra_records
+        if report.tech_stack.inferred_infrastructure_needs.strip()
         else report.tech_stack.inferred_infrastructure_needs
     )
 
