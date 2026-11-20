@@ -208,6 +208,10 @@ class OutreachPitch(BaseModel):
             "5) Low-friction next step."
         ),
     )
+    art14_transparency_notice: str = Field(
+        default="",
+        description="GDPR Art. 14 transparency and Art. 21 opt-out notice for B2B outreach.",
+    )
 
 
 class LeadReport(BaseModel):
@@ -231,7 +235,7 @@ class LeadReport(BaseModel):
         description="Structured tech-stack and hiring signal analysis."
     )
     outreach: OutreachPitch = Field(
-        description="Tailored outreach pitch and Baseline vs. Multi-Agent comparison."
+        description="Tailored outreach pitch and phone call brief."
     )
     sources: list[SourceCitation] = Field(
         min_length=1,
@@ -240,4 +244,16 @@ class LeadReport(BaseModel):
     verified_claims: list[VerifiedClaim] = Field(
         default_factory=list,
         description="5-step fact-check audit mapping each claim to its re-fetched source excerpt and grounding score.",
+    )
+    created_at_utc: str = Field(
+        default="",
+        description="ISO-8601 UTC timestamp when this report was generated.",
+    )
+    expires_at_utc: str = Field(
+        default="",
+        description="ISO-8601 UTC timestamp when this report expires under GDPR Art. 5(1)(e) retention limits.",
+    )
+    pii_redacted: bool = Field(
+        default=True,
+        description="True when personal data (PII) has been filtered out under GDPR Art. 5(1)(c).",
     )

@@ -2,12 +2,12 @@
 
 ## 1. Executive Summary
 
-The **B2B Lead Intelligence & Outreach Agent** is verified by an automated test suite of **66 unit and integration tests** executed locally via `pytest` and continuously in **GitHub Actions CI** ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)) across Python 3.11 and 3.12.
+The **B2B Lead Intelligence & Outreach Agent** is verified by an automated test suite of **73 unit and integration tests** executed locally via `pytest` and continuously in **GitHub Actions CI** ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)) across Python 3.11 and 3.12.
 
 | Metric | Value |
 | :--- | :--- |
-| **Total Tests Collected** | `66` |
-| **Passed** | `66 (100%)` |
+| **Total Tests Collected** | `73` |
+| **Passed** | `73 (100%)` |
 | **Failed** | `0` |
 | **Skipped / Errors** | `0` |
 | **Ruff Linter (`ruff check src tests ui`)** | `All checks passed! (0 warnings/errors)` |
@@ -68,6 +68,16 @@ Verifies [`src/lead_agent/tools/research_engine.py`](../src/lead_agent/tools/res
 6. `test_parse_rss_xml_and_evaluate_source_quality`: RSS 2.0 XML parsing and source ranking.
 7. `test_source_scoring_considers_actual_age_and_separates_pub_vs_update_dates`: Verifies `age_days` calculation, time-decay recency curve (`5d` vs. `>1000d`), and separate `published_date` vs. `updated_date` handling.
 8. `test_source_quality_and_statement_quality_scored_separately`: Verifies independent scoring of `source_quality_score` (*Quellenqualität*) and `statement_quality_score` (*Aussagequalität*).
+
+### G. GDPR / DSGVO Privacy, PII Redaction, Retention & Art. 21 Opt-Out (`tests/test_privacy.py` — 7 Tests)
+Verifies [`src/lead_agent/privacy.py`](../src/lead_agent/privacy.py) and [`docs/privacy_art13_14.md`](privacy_art13_14.md):
+1. `test_scrub_personal_data_redacts_emails_phones_profiles_and_contact_names`: Verifies redaction of personal emails, phone/fax numbers, personal LinkedIn URLs (`linkedin.com/in/...`), and contact/honorific names while keeping corporate ISO dates and metrics intact.
+2. `test_strip_personal_dom_elements_and_json_ld_person_filtering`: Confirms removal of `<author>`, `<address>`, `.byline`, `.recruiter` DOM elements and filtering of JSON-LD `@type: "Person"` schemas.
+3. `test_data_minimization_on_careers_and_company_pages`: Confirms Art. 5(1)(c) data minimization on `/careers` pages (truncating raw prose to `max_excerpt_chars` while extracting technical hiring signals and scrubbing recruiter PII).
+4. `test_retention_timestamps_and_automated_expiration_check`: Confirms Art. 5(1)(e) UTC creation/expiration timestamp computation and automated TTL expiration checks.
+5. `test_art21_opt_out_blocklist_blocks_domain_and_subdomains`: Confirms Art. 21 GDPR domain & subdomain blocklisting across `OptOutBlocklistManager`, JSON persistence, `validate_lead_input`, `scrape_company_website_impl`, and `fetch_company_news_and_press_impl`.
+6. `test_personal_linkedin_profile_blocked_while_company_profile_allowed`: Confirms blocking of personal LinkedIn `/in/` and `/pub/` profiles while allowing `/company/` profiles.
+7. `test_art14_transparency_notice_generated`: Confirms Art. 14 GDPR transparency footer generation and presence of [`docs/privacy_art13_14.md`](privacy_art13_14.md).
 
 ---
 

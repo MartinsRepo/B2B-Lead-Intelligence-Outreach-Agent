@@ -23,6 +23,7 @@ except ImportError:  # pragma: no cover
 
 from lead_agent.config import DEFAULT_SETTINGS
 from lead_agent.context import LeadRunContext
+from lead_agent.privacy import scrub_personal_data, strip_personal_dom_elements
 from lead_agent.security import SSRFBlockedError, safe_http_get
 from lead_agent.tools.web_scraper import DEFAULT_HEADERS, normalize_target_url
 
@@ -229,11 +230,16 @@ def parse_job_board_signals(
     html: str,
     page_url: str,
     detected_at: str | None = None,
+    max_excerpt_chars: int = DEFAULT_SETTINGS.max_careers_excerpt_chars,
 ) -> dict[str, object]:
-    """Extract open role titles and suspected engineering tech signals from a careers/job HTML page."""
+    """Extract open role titles and suspected engineering tech signals with GDPR data minimization."""
     timestamp = detected_at or utc_now_iso()
     soup = BeautifulSoup(html, "html.parser")
-    text_content = " ".join(soup.get_text(" ", strip=True).split())
+    for tag in soup(["script", "style", "noscript", "svg", "footer", "nav"]):
+        tag.decompose()
+    strip_personal_dom_elements(soup)
+
+    text_content = scrub_personal_data(" ".join(soup.get_text(" ", strip=True).split()))
 
     role_headings: list[str] = []
     role_regex = re.compile(
@@ -241,7 +247,7 @@ def parse_job_board_signals(
         re.I,
     )
     for tag in soup.find_all(["h2", "h3", "h4", "a"], limit=60):
-        label = " ".join(tag.get_text(" ", strip=True).split())
+        label = scrub_personal_data(" ".join(tag.get_text(" ", strip=True).split()))
         if 6 <= len(label) <= 90 and role_regex.search(label) and label not in role_headings:
             role_headings.append(label)
             if len(role_headings) >= 10:
@@ -276,7 +282,7 @@ def parse_job_board_signals(
         "detected_job_skills": matched_skills,
         "technology_signals": job_tech_signals,
         "open_role_signals": role_headings,
-        "excerpt": text_content[:2000],
+        "excerpt": text_content[:max_excerpt_chars],
     }
 
 

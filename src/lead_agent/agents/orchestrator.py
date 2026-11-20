@@ -29,6 +29,11 @@ from lead_agent.guardrails import (
     validate_lead_output,
     validate_lead_output_guardrail,
 )
+from lead_agent.privacy import (
+    compute_retention_timestamps,
+    get_art14_outreach_footer,
+    scrub_personal_data,
+)
 from lead_agent.schemas import DetectedTechnology, LeadReport, SourceCitation
 from lead_agent.tools.research_engine import evaluate_source_quality
 from lead_agent.tools.tech_parser import classify_tech_status, utc_now_iso
@@ -349,6 +354,62 @@ async def run_lead_intelligence_pipeline(
                 "outreach": report.outreach.model_copy(
                     update={"phone_call_bullet_points": synthesized_bullets}
                 )
+            }
+        )
+
+    # Apply GDPR Art. 5(1)(c) PII redaction, Art. 5(1)(e) retention timestamps, and Art. 14 transparency footer
+    created_utc, expires_utc = compute_retention_timestamps(settings.retention_ttl_seconds)
+    art14_footer = get_art14_outreach_footer(report.company_name)
+
+    if settings.enable_pii_redaction:
+        report = report.model_copy(
+            update={
+                "executive_summary": scrub_personal_data(report.executive_summary),
+                "recent_news_and_triggers": [
+                    scrub_personal_data(t) for t in report.recent_news_and_triggers
+                ],
+                "identified_pain_points": [
+                    scrub_personal_data(p) for p in report.identified_pain_points
+                ],
+                "tech_stack": report.tech_stack.model_copy(
+                    update={
+                        "hiring_signals": [
+                            scrub_personal_data(h) for h in report.tech_stack.hiring_signals
+                        ],
+                        "inferred_infrastructure_needs": scrub_personal_data(
+                            report.tech_stack.inferred_infrastructure_needs
+                        ),
+                    }
+                ),
+                "outreach": report.outreach.model_copy(
+                    update={
+                        "subject_line": scrub_personal_data(report.outreach.subject_line),
+                        "hyper_personalized_pitch": scrub_personal_data(
+                            report.outreach.hyper_personalized_pitch
+                        ),
+                        "icebreaker_hook": scrub_personal_data(report.outreach.icebreaker_hook),
+                        "call_to_action": scrub_personal_data(report.outreach.call_to_action),
+                        "phone_call_bullet_points": [
+                            scrub_personal_data(b)
+                            for b in report.outreach.phone_call_bullet_points
+                        ],
+                        "art14_transparency_notice": art14_footer,
+                    }
+                ),
+                "created_at_utc": created_utc,
+                "expires_at_utc": expires_utc,
+                "pii_redacted": True,
+            }
+        )
+    else:
+        report = report.model_copy(
+            update={
+                "outreach": report.outreach.model_copy(
+                    update={"art14_transparency_notice": art14_footer}
+                ),
+                "created_at_utc": created_utc,
+                "expires_at_utc": expires_utc,
+                "pii_redacted": False,
             }
         )
 

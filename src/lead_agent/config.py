@@ -83,6 +83,21 @@ class AgentSettings:
     # 4. Structured Output Configuration
     enforce_structured_output: bool = True
 
+    # 5. GDPR / DSGVO Data Protection Configuration
+    enable_pii_redaction: bool = True
+    block_personal_profiles: bool = True
+    max_careers_excerpt_chars: int = 600
+    retention_ttl_seconds: int = field(
+        default_factory=lambda: int(os.getenv("RETENTION_TTL_SECONDS", "3600"))
+    )
+    opt_out_domains: tuple[str, ...] = field(
+        default_factory=lambda: tuple(
+            d.strip().lower()
+            for d in os.getenv("GDPR_OPT_OUT_DOMAINS", "").split(",")
+            if d.strip()
+        )
+    )
+
     def get_pricing_for_model(self, model_name: str) -> ModelPricing:
         """Return the pricing tier matching a given model name."""
         normalized = model_name.lower().strip()

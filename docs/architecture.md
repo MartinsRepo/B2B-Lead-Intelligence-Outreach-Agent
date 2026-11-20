@@ -130,6 +130,27 @@ To prevent false positives (such as flagging `Kubernetes` or `AWS` as confirmed 
 
 ---
 
+## 3e. GDPR / DSGVO Privacy-by-Design Engine (`src/lead_agent/privacy.py` & `docs/privacy_art13_14.md`)
+
+To satisfy European GDPR / German DSGVO compliance prior to production operation (*Priorität 1 – Datenschutz Vor Produktivbetrieb*), [`src/lead_agent/privacy.py`](../src/lead_agent/privacy.py) enforces five technical controls across all scrapers, guardrails, schemas, and the UI:
+
+1. **Automated Personal Data (PII) Filtering (`strip_personal_dom_elements` & `scrub_personal_data`):**
+   - Strips personal DOM containers (`<author>`, `<address>`, `.author`, `.byline`, `.vcard`, `.team-member`, `.recruiter`, `.contact-person`, `.press-contact`) and author `<meta>` tags before text extraction.
+   - Skips JSON-LD `@type: "Person"` objects during structured hydration recovery.
+   - Redacts personal email addresses (`[REDACTED_EMAIL]`), telephone/mobile/fax numbers (`[REDACTED_PHONE]`), personal LinkedIn profile URLs (`linkedin.com/in/...` → `[REDACTED_PERSONAL_PROFILE]`), HR/press contact person lines (`[REDACTED_CONTACT_PERSON]`), and honorific person names (`[REDACTED_PERSON_NAME]`) before sending text to OpenAI or persisting it in `LeadReport`.
+   - Rejects personal profile URLs (`linkedin.com/in/...`, `linkedin.com/pub/...`) at the Input Guardrail (`is_personal_profile_url`).
+2. **Data Minimization on Careers & Corporate Pages (`minimize_corporate_text`, Art. 5(1)(c) GDPR):**
+   - Limits `/careers` and `/jobs` excerpts to `MAX_CAREERS_EXCERPT_CHARS = 600` characters focused strictly on open engineering roles and technical skill requirements while stripping recruiter contact details.
+3. **Storage Limitation, Retention TTLs & Automated Deletion (`compute_retention_timestamps` & `is_timestamp_expired`, Art. 5(1)(e) & Art. 17 GDPR):**
+   - Stamps every `LeadReport` with `created_at_utc` and `expires_at_utc` (default TTL: `3600` seconds / `60` minutes).
+   - Automatically purges expired reports from the Streamlit session state and provides a one-click **Immediate Art. 17 GDPR Erase** button in the sidebar.
+4. **Art. 21 GDPR Right to Object & Domain Blocklist (`OptOutBlocklistManager`):**
+   - Enforces domain and subdomain opt-out blocking across the Input Guardrail, Web Scraper, Research Engine, and UI session state (configurable via `GDPR_OPT_OUT_DOMAINS`, JSON persistence, or the Streamlit Control Plane).
+5. **Art. 13 & Art. 14 GDPR Transparency Notice (`get_art14_outreach_footer` & `docs/privacy_art13_14.md`):**
+   - Embeds an automated Art. 14 GDPR transparency and Art. 21 opt-out notice in `report.outreach.art14_transparency_notice` and provides full bilingual legal documentation in [`docs/privacy_art13_14.md`](privacy_art13_14.md).
+
+---
+
 ## 4. Deterministic Structured Outputs (`src/lead_agent/schemas.py`)
 
 By passing `output_type=LeadReport` to the `Lead Orchestrator`, the OpenAI Agents SDK enforces strict adherence to the Pydantic v2 schema:

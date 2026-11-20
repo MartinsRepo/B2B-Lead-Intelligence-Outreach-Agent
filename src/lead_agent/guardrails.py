@@ -40,6 +40,11 @@ except ImportError:  # pragma: no cover
 
 from lead_agent.config import DEFAULT_SETTINGS, DEFAULT_SPAM_PHRASES, AgentSettings
 from lead_agent.context import LeadRunContext
+from lead_agent.privacy import (
+    DEFAULT_OPT_OUT_MANAGER,
+    OptOutBlocklistManager,
+    is_personal_profile_url,
+)
 from lead_agent.schemas import LeadReport
 from lead_agent.security import validate_url_ssrf
 
@@ -136,6 +141,31 @@ def validate_lead_input(
         if candidate.startswith(("http://", "https://"))
         else f"https://{candidate}"
     )
+
+    # GDPR Art. 5(1)(c) Data Minimization: Block personal LinkedIn profiles (/in/...) when configured
+    if active_settings.block_personal_profiles and is_personal_profile_url(normalized):
+        return ValidationOutcome(
+            is_valid=False,
+            normalized_target="",
+            reason=(
+                f"GDPR Data Minimization Guardrail blocked personal profile URL '{normalized}'. "
+                "Only corporate domains or company pages (e.g., 'linkedin.com/company/...') are permitted."
+            ),
+        )
+
+    # GDPR Art. 21 Right to Object: Check Opt-Out & Domain Blocklist
+    combined_blocklist = OptOutBlocklistManager(
+        initial_domains=set(DEFAULT_OPT_OUT_MANAGER.blocked_domains)
+        | set(active_settings.opt_out_domains)
+    )
+    opted_out, opt_out_reason = combined_blocklist.is_opted_out(normalized)
+    if opted_out:
+        return ValidationOutcome(
+            is_valid=False,
+            normalized_target="",
+            reason=opt_out_reason,
+        )
+
     parsed = urlparse(normalized)
     hostname = (parsed.hostname or "").lower()
 

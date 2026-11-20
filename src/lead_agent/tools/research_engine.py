@@ -14,6 +14,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from lead_agent.config import DEFAULT_SETTINGS
+from lead_agent.privacy import scrub_personal_data
 from lead_agent.security import SSRFBlockedError, safe_http_get, validate_url_ssrf
 
 TIER1_NEWS_DOMAINS: tuple[str, ...] = (
@@ -111,12 +112,16 @@ def extract_json_ld_and_hydration_state(html: str) -> dict[str, object]:
                 for item in subnodes:
                     if not isinstance(item, dict):
                         continue
-                    headline = str(
-                        item.get("headline") or item.get("name") or ""
-                    ).strip()
-                    desc = str(
-                        item.get("description") or item.get("articleBody") or ""
-                    ).strip()
+                    node_type = str(item.get("@type", "Thing"))
+                    # GDPR Data Minimization: skip Person schemas in JSON-LD
+                    if node_type.lower() == "person":
+                        continue
+                    headline = scrub_personal_data(
+                        str(item.get("headline") or item.get("name") or "").strip()
+                    )
+                    desc = scrub_personal_data(
+                        str(item.get("description") or item.get("articleBody") or "").strip()
+                    )
                     date_pub = _normalize_date_string(
                         str(item.get("datePublished") or item.get("dateCreated") or "").strip()
                     )
@@ -130,7 +135,7 @@ def extract_json_ld_and_hydration_state(html: str) -> dict[str, object]:
                     if headline or desc:
                         json_ld_items.append(
                             {
-                                "type": str(item.get("@type", "Thing")),
+                                "type": node_type,
                                 "headline": headline,
                                 "description": desc[:600],
                                 "date": date_pub or date_mod,
@@ -480,9 +485,9 @@ def evaluate_source_quality(
     )
 
     return EvaluatedSource(
-        title=title.strip() or f"{clean_target} Source",
+        title=scrub_personal_data(title.strip()) or f"{clean_target} Source",
         url=url.strip(),
-        snippet=snippet.strip()[:500] or f"Verified source from {source_host}.",
+        snippet=scrub_personal_data(snippet.strip())[:500] or f"Verified source from {source_host}.",
         source_type=source_type,
         published_date=norm_pub,
         updated_date=norm_upd,

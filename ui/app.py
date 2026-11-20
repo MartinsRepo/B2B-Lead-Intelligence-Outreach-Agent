@@ -22,6 +22,11 @@ from lead_agent.agents.orchestrator import (  # noqa: E402
 )
 from lead_agent.config import DEFAULT_SPAM_PHRASES, AgentSettings  # noqa: E402
 from lead_agent.context import LeadRunContext  # noqa: E402
+from lead_agent.privacy import (  # noqa: E402
+    DEFAULT_OPT_OUT_MANAGER,
+    OptOutBlocklistManager,
+    is_timestamp_expired,
+)
 from lead_agent.schemas import LeadReport  # noqa: E402
 
 
@@ -275,6 +280,38 @@ def render_sidebar() -> AgentSettings:
                 "discard" if policy_label.startswith("Discard") else "mark_as_hypothesis"
             )
 
+            st.markdown("**5. GDPR / DSGVO Privacy & Compliance (Priorität 1)**")
+            enable_pii_redaction = st.checkbox(
+                "Filter Personal Data / PII (Emails, Phones, Names)",
+                value=True,
+                help="Strips <author>/<address> DOM elements, skips JSON-LD Person schemas, and redacts personal emails, phone numbers, LinkedIn /in/ profiles, and contact names.",
+            )
+            block_personal_profiles = st.checkbox(
+                "Block Personal Profile URLs (linkedin.com/in/...)",
+                value=True,
+                help="Blocks individual personal profile URLs at the Input Guardrail while allowing company pages.",
+            )
+            retention_ttl_minutes = st.number_input(
+                "Report Retention Period / TTL (minutes, Art. 5(1)(e))",
+                min_value=5,
+                max_value=1440,
+                value=60,
+                step=5,
+                help="Automatically purges in-memory lead reports once the configured retention TTL expires.",
+            )
+            raw_opt_out_domains = st.text_area(
+                "Art. 21 GDPR Opt-Out & Domain Blocklist (comma-separated)",
+                value=", ".join(DEFAULT_OPT_OUT_MANAGER.blocked_domains),
+                height=68,
+                help="Domains listed here (and their subdomains) are blocked from scraping, analysis, and outreach generation.",
+            )
+            opt_out_domains = tuple(
+                d.strip().lower() for d in raw_opt_out_domains.split(",") if d.strip()
+            )
+            if st.button("🗑️ Immediate Art. 17 GDPR Erase (Clear Session Data)", width="stretch"):
+                st.session_state.pop("last_result", None)
+                st.toast("Session report and telemetry erased (Art. 17 GDPR).", icon="🗑️")
+
     return AgentSettings(
         fast_model=active_fast,
         reasoning_model=active_reasoning,
@@ -292,6 +329,10 @@ def render_sidebar() -> AgentSettings:
         enable_fact_checking=enable_fact_checking,
         min_grounding_score=float(min_grounding_score),
         unverified_claim_policy=unverified_claim_policy,
+        enable_pii_redaction=enable_pii_redaction,
+        block_personal_profiles=block_personal_profiles,
+        retention_ttl_seconds=int(retention_ttl_minutes) * 60,
+        opt_out_domains=opt_out_domains,
         enforce_structured_output=enforce_structured_output,
     )
 
@@ -402,6 +443,18 @@ def render_report_tabs(report: LeadReport, context: LeadRunContext) -> None:
                     f"- **Pain-Point Hypothesis:** Validate *{report.identified_pain_points[0]}*\n"
                     f"- **Tech-Stack Context:** Mention `{', '.join(report.tech_stack.detected_technologies[:4]) or 'core stack'}`\n"
                     f"- **Next-Step Close:** {report.outreach.call_to_action}"
+                )
+
+        if report.outreach.art14_transparency_notice or report.expires_at_utc:
+            with st.container(border=True):
+                st.markdown("#### 🛡️ GDPR / DSGVO Compliance Metadata (Art. 5, 13/14, 17 & 21)")
+                if report.outreach.art14_transparency_notice:
+                    st.caption(report.outreach.art14_transparency_notice)
+                st.markdown(
+                    f"- **PII Redaction & Data Minimization:** `{'✅ Active' if report.pii_redacted else '⚠️ Disabled'}` · "
+                    f"**Created (UTC):** `{report.created_at_utc or 'N/A'}` · "
+                    f"**Auto-Purge Expiration (UTC):** `{report.expires_at_utc or 'N/A'}` · "
+                    f"**Full Notice:** `docs/privacy_art13_14.md`"
                 )
 
     with tab_intel:
@@ -615,6 +668,22 @@ def main() -> None:
     report, run_ctx, guardrail_error, api_error = st.session_state.get(
         "last_result", (None, None, None, None)
     )
+
+    if report is not None:
+        runtime_opt_out = OptOutBlocklistManager(
+            initial_domains=(*DEFAULT_OPT_OUT_MANAGER.blocked_domains, *settings.opt_out_domains)
+        )
+        opted_out, opt_out_reason = runtime_opt_out.is_opted_out(report.target_domain)
+        if opted_out:
+            st.session_state.pop("last_result", None)
+            report, run_ctx = None, None
+            st.warning(f"🛡️ **GDPR Art. 21 Opt-Out Applied:** {opt_out_reason} Session report purged.")
+        elif report.expires_at_utc and is_timestamp_expired(report.expires_at_utc):
+            st.session_state.pop("last_result", None)
+            report, run_ctx = None, None
+            st.info(
+                "🗑️ **GDPR Art. 5(1)(e) Retention Policy:** The cached report exceeded its retention TTL and was automatically purged."
+            )
 
     with col_telemetry:
         render_telemetry_card(run_ctx)

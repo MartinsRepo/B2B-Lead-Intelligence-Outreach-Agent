@@ -22,6 +22,11 @@ except ImportError:  # pragma: no cover - fallback when SDK is not yet installed
 
 from lead_agent.config import DEFAULT_SETTINGS
 from lead_agent.context import LeadRunContext
+from lead_agent.privacy import (
+    DEFAULT_OPT_OUT_MANAGER,
+    scrub_personal_data,
+    strip_personal_dom_elements,
+)
 from lead_agent.security import SSRFBlockedError, safe_http_get, validate_url_ssrf
 from lead_agent.tools.research_engine import (
     EvaluatedSource,
@@ -66,19 +71,22 @@ def extract_clean_page_data(html: str, base_url: str, max_chars: int = 6000) -> 
 
     for tag in soup(["script", "style", "noscript", "svg", "footer", "nav"]):
         tag.decompose()
+    strip_personal_dom_elements(soup)
 
-    title = soup.title.string.strip() if soup.title and soup.title.string else ""
+    title = scrub_personal_data(
+        soup.title.string.strip() if soup.title and soup.title.string else ""
+    )
 
     meta_desc = ""
     meta_tag = soup.find("meta", attrs={"name": re.compile(r"^description$", re.I)}) or soup.find(
         "meta", attrs={"property": "og:description"}
     )
     if meta_tag and meta_tag.get("content"):
-        meta_desc = str(meta_tag.get("content")).strip()
+        meta_desc = scrub_personal_data(str(meta_tag.get("content")).strip())
 
     headings: list[str] = []
     for h_tag in soup.find_all(["h1", "h2", "h3"], limit=15):
-        text = " ".join(h_tag.get_text(" ", strip=True).split())
+        text = scrub_personal_data(" ".join(h_tag.get_text(" ", strip=True).split()))
         if text and text not in headings:
             headings.append(text)
 
@@ -124,6 +132,8 @@ def extract_clean_page_data(html: str, base_url: str, max_chars: int = 6000) -> 
     else:
         combined_body = body_text
 
+    combined_body = scrub_personal_data(combined_body)
+
     published_dates = structured_state.get("published_dates", [])
     updated_dates = structured_state.get("updated_dates", [])
     first_pub = str(published_dates[0]) if isinstance(published_dates, list) and published_dates else ""
@@ -148,6 +158,18 @@ async def scrape_company_website_impl(
 ) -> dict[str, object]:
     """Fetch a company webpage with SSRF/redirect checks, JSON-LD/hydration recovery, and JS reader fallback."""
     normalized_url = normalize_target_url(url)
+    opted_out, opt_out_reason = DEFAULT_OPT_OUT_MANAGER.is_opted_out(normalized_url)
+    if opted_out:
+        return {
+            "url": normalized_url,
+            "error": opt_out_reason,
+            "title": urlparse(normalized_url).netloc,
+            "meta_description": "",
+            "headings": [],
+            "discovered_news_links": [],
+            "discovered_rss_feeds": [],
+            "body_excerpt": "",
+        }
     async with httpx.AsyncClient(
         headers=DEFAULT_HEADERS, follow_redirects=False, timeout=timeout
     ) as client:
@@ -216,6 +238,17 @@ async def fetch_company_news_and_press_impl(
     4. External Google News RSS search for third-party coverage & press wires
     """
     normalized_url = normalize_target_url(company_or_domain)
+    opted_out, opt_out_reason = DEFAULT_OPT_OUT_MANAGER.is_opted_out(normalized_url)
+    if opted_out:
+        return {
+            "company_or_domain": company_or_domain,
+            "error": opt_out_reason,
+            "channels_combined": [],
+            "articles_found": 0,
+            "average_composite_score": 0.0,
+            "articles": [],
+        }
+
     initial_ssrf = validate_url_ssrf(normalized_url)
     if not initial_ssrf.is_safe:
         return {
