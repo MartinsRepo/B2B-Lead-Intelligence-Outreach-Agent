@@ -221,3 +221,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local GDPR / UWG persistent opt-out blocklist file
+.gdpr_opt_out_blocklist.json

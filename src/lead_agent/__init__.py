@@ -19,9 +19,11 @@ from lead_agent.guardrails import (
     validate_lead_output,
 )
 from lead_agent.privacy import (
+    DEFAULT_MISLEADING_ADVERTISING_PHRASES,
     DEFAULT_OPT_OUT_MANAGER,
     OptOutBlocklistManager,
     compute_retention_timestamps,
+    detect_misleading_advertising_claims,
     get_art14_outreach_footer,
     is_personal_profile_url,
     is_timestamp_expired,
@@ -30,6 +32,7 @@ from lead_agent.privacy import (
     strip_personal_dom_elements,
 )
 from lead_agent.schemas import (
+    AdvertisingComplianceRecord,
     DetectedTechnology,
     LeadReport,
     OutreachPitch,
@@ -48,8 +51,10 @@ from lead_agent.security import (
 )
 
 __all__ = [
+    "AdvertisingComplianceRecord",
     "AgentSettings",
     "AgentUsageRecord",
+    "DEFAULT_MISLEADING_ADVERTISING_PHRASES",
     "DEFAULT_OPT_OUT_MANAGER",
     "DEFAULT_SETTINGS",
     "DetectedTechnology",
@@ -70,6 +75,7 @@ __all__ = [
     "create_copywriter_agent",
     "create_lead_orchestrator",
     "create_tech_stack_agent",
+    "detect_misleading_advertising_claims",
     "extract_best_matching_passage",
     "filter_safe_external_urls",
     "get_art14_outreach_footer",

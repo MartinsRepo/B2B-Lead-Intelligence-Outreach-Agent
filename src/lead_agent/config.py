@@ -16,6 +16,20 @@ DEFAULT_SPAM_PHRASES: tuple[str, ...] = (
     "click here immediately",
 )
 
+DEFAULT_MISLEADING_CLAIMS: tuple[str, ...] = (
+    "100% guaranteed",
+    "guaranteed roi",
+    "guaranteed revenue",
+    "zero risk",
+    "risk-free guarantee",
+    "certifiably the #1",
+    "proven to double",
+    "eliminates all downtime",
+    "100% bug-free",
+    "officially endorsed by",
+    "exclusive partnership with",
+)
+
 
 @dataclass(frozen=True)
 class ModelPricing:
@@ -97,6 +111,14 @@ class AgentSettings:
             if d.strip()
         )
     )
+
+    # 6. Advertising Law / Werberecht (UWG § 5 & § 7) Configuration
+    allow_auto_email_dispatch: bool = False  # Strictly disabled: draft-only until human legal approval
+    require_legal_approval_for_export: bool = True
+    default_consent_status: str = "pending_verification"  # "pending_verification", "explicit_opt_in", "presumed_b2b_interest_phone_only", "no_consent_draft_only"
+    block_misleading_advertising_claims: bool = True
+    blocked_misleading_claims: tuple[str, ...] = DEFAULT_MISLEADING_CLAIMS
+    require_substantiated_claims_in_outreach: bool = True
 
     def get_pricing_for_model(self, model_name: str) -> ModelPricing:
         """Return the pricing tier matching a given model name."""

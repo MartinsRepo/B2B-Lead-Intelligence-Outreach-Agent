@@ -30,11 +30,18 @@ from lead_agent.guardrails import (
     validate_lead_output_guardrail,
 )
 from lead_agent.privacy import (
+    DEFAULT_OPT_OUT_MANAGER,
     compute_retention_timestamps,
+    detect_misleading_advertising_claims,
     get_art14_outreach_footer,
     scrub_personal_data,
 )
-from lead_agent.schemas import DetectedTechnology, LeadReport, SourceCitation
+from lead_agent.schemas import (
+    AdvertisingComplianceRecord,
+    DetectedTechnology,
+    LeadReport,
+    SourceCitation,
+)
 from lead_agent.tools.research_engine import evaluate_source_quality
 from lead_agent.tools.tech_parser import classify_tech_status, utc_now_iso
 
@@ -357,9 +364,46 @@ async def run_lead_intelligence_pipeline(
             }
         )
 
-    # Apply GDPR Art. 5(1)(c) PII redaction, Art. 5(1)(e) retention timestamps, and Art. 14 transparency footer
+    # Apply GDPR Art. 5(1)(c) PII redaction, Art. 5(1)(e) retention timestamps, Art. 14 transparency footer,
+    # and Advertising Law / Werberecht (§ 5 & § 7 UWG) provenance, consent & draft-only gate
+    if settings.opt_out_domains:
+        DEFAULT_OPT_OUT_MANAGER.sync_domains(settings.opt_out_domains)
+
     created_utc, expires_utc = compute_retention_timestamps(settings.retention_ttl_seconds)
     art14_footer = get_art14_outreach_footer(report.company_name)
+    origin_urls = [src.url for src in report.sources]
+    has_supported_claim = (
+        any(
+            vc.verification_status in ("verified", "partially_supported")
+            for vc in report.verified_claims
+        )
+        if report.verified_claims
+        else True
+    )
+    has_misleading = bool(
+        detect_misleading_advertising_claims(
+            " ".join(
+                [
+                    report.outreach.subject_line,
+                    report.outreach.hyper_personalized_pitch,
+                    report.outreach.icebreaker_hook,
+                    report.outreach.call_to_action,
+                ]
+            ),
+            prohibited_phrases=settings.blocked_misleading_claims,
+        )
+    )
+    adv_compliance = AdvertisingComplianceRecord(
+        auto_send_disabled=True,
+        delivery_mode="draft_only_requires_legal_release",
+        legal_approval_status="pending_legal_review",
+        approved_by="",
+        approved_at_utc="",
+        consent_status=settings.default_consent_status,
+        contact_origin_urls=origin_urls,
+        origin_documented_at_utc=created_utc,
+        substantiation_audit_passed=has_supported_claim and not has_misleading,
+    )
 
     if settings.enable_pii_redaction:
         report = report.model_copy(
@@ -394,6 +438,7 @@ async def run_lead_intelligence_pipeline(
                             for b in report.outreach.phone_call_bullet_points
                         ],
                         "art14_transparency_notice": art14_footer,
+                        "advertising_compliance": adv_compliance,
                     }
                 ),
                 "created_at_utc": created_utc,
@@ -405,7 +450,10 @@ async def run_lead_intelligence_pipeline(
         report = report.model_copy(
             update={
                 "outreach": report.outreach.model_copy(
-                    update={"art14_transparency_notice": art14_footer}
+                    update={
+                        "art14_transparency_notice": art14_footer,
+                        "advertising_compliance": adv_compliance,
+                    }
                 ),
                 "created_at_utc": created_utc,
                 "expires_at_utc": expires_utc,

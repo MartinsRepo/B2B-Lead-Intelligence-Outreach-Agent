@@ -177,6 +177,53 @@ class TechStackAnalysis(BaseModel):
     )
 
 
+class AdvertisingComplianceRecord(BaseModel):
+    """Advertising Law / Werberecht (§ 5 & § 7 UWG / ePrivacy) compliance and provenance record."""
+
+    auto_send_disabled: bool = Field(
+        default=True,
+        description="Hard technical lock: automated email dispatch is disabled; all outreach is draft-only.",
+    )
+    delivery_mode: str = Field(
+        default="draft_only_requires_legal_release",
+        description="Delivery status: 'draft_only_requires_legal_release' or 'approved_for_manual_handoff'.",
+    )
+    legal_approval_status: str = Field(
+        default="pending_legal_review",
+        description="Status of human legal/compliance release: 'pending_legal_review', 'approved', or 'rejected'.",
+    )
+    approved_by: str = Field(
+        default="",
+        description="Name or identifier of the compliance/sales reviewer who released the outreach draft.",
+    )
+    approved_at_utc: str = Field(
+        default="",
+        description="ISO-8601 UTC timestamp when legal/human approval was recorded.",
+    )
+    consent_status: str = Field(
+        default="pending_verification",
+        description=(
+            "Documented advertising consent status (§ 7 UWG): 'pending_verification', "
+            "'explicit_opt_in' (§ 7(2) No. 2 UWG for electronic mail), "
+            "'existing_customer_relationship' (§ 7(3) UWG), "
+            "'presumed_b2b_interest_phone_only' (§ 7(2) No. 1 UWG for B2B phone calls), or "
+            "'no_consent_draft_only'."
+        ),
+    )
+    contact_origin_urls: list[str] = Field(
+        default_factory=list,
+        description="Verified public corporate source URLs documenting the origin (Herkunft) of the B2B account intelligence.",
+    )
+    origin_documented_at_utc: str = Field(
+        default="",
+        description="ISO-8601 UTC timestamp when the contact origin and consent status were documented.",
+    )
+    substantiation_audit_passed: bool = Field(
+        default=True,
+        description="True when outreach claims are backed by verified sources and free of misleading claims (§ 5 UWG).",
+    )
+
+
 class OutreachPitch(BaseModel):
     """B2B outreach deliverables including email pitch, DM hook, CTA, and phone call memory notices."""
 
@@ -211,6 +258,10 @@ class OutreachPitch(BaseModel):
     art14_transparency_notice: str = Field(
         default="",
         description="GDPR Art. 14 transparency and Art. 21 opt-out notice for B2B outreach.",
+    )
+    advertising_compliance: AdvertisingComplianceRecord = Field(
+        default_factory=AdvertisingComplianceRecord,
+        description="Advertising law (§ 5 & § 7 UWG) compliance record: draft-only gate, consent status, and origin documentation.",
     )
 
 

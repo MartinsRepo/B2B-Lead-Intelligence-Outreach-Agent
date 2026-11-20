@@ -43,6 +43,7 @@ from lead_agent.context import LeadRunContext
 from lead_agent.privacy import (
     DEFAULT_OPT_OUT_MANAGER,
     OptOutBlocklistManager,
+    detect_misleading_advertising_claims,
     is_personal_profile_url,
 )
 from lead_agent.schemas import LeadReport
@@ -275,6 +276,58 @@ def validate_lead_output(
                     normalized_target=report.target_domain,
                     reason=f"Output Guardrail failed: Outreach pitch contains prohibited spam phrase '{cliche}'.",
                 )
+
+    # Advertising Law / Werberecht (§ 5 & § 7 UWG) Guardrails
+    if not report.outreach.advertising_compliance.auto_send_disabled:
+        return ValidationOutcome(
+            is_valid=False,
+            normalized_target=report.target_domain,
+            reason=(
+                "Output Guardrail failed (§ 7 UWG): Automated email dispatch is prohibited without explicit "
+                "legal release (`auto_send_disabled` must remain True)."
+            ),
+        )
+
+    if active_settings.block_misleading_advertising_claims:
+        combined_outreach_text = " ".join(
+            [
+                report.outreach.subject_line,
+                report.outreach.hyper_personalized_pitch,
+                report.outreach.icebreaker_hook,
+                report.outreach.call_to_action,
+                *report.outreach.phone_call_bullet_points,
+            ]
+        )
+        misleading_hits = detect_misleading_advertising_claims(
+            combined_outreach_text,
+            prohibited_phrases=active_settings.blocked_misleading_claims,
+        )
+        if misleading_hits:
+            return ValidationOutcome(
+                is_valid=False,
+                normalized_target=report.target_domain,
+                reason=(
+                    f"Output Guardrail failed (§ 5 UWG Misleading Advertising): Outreach copy contains "
+                    f"prohibited or unsubstantiated advertising claim '{misleading_hits[0]}'."
+                ),
+            )
+
+    if (
+        active_settings.require_substantiated_claims_in_outreach
+        and report.verified_claims
+        and not any(
+            vc.verification_status in ("verified", "partially_supported")
+            for vc in report.verified_claims
+        )
+    ):
+        return ValidationOutcome(
+            is_valid=False,
+            normalized_target=report.target_domain,
+            reason=(
+                "Output Guardrail failed (§ 5 UWG Substantiation Requirement): None of the claims in the "
+                "LeadReport could be substantiated against the cited sources (`0` verified/supported claims)."
+            ),
+        )
 
     return ValidationOutcome(
         is_valid=True,

@@ -130,10 +130,10 @@ def normalize_domain_key(url_or_domain: str) -> str:
 
 
 class OptOutBlocklistManager:
-    """Art. 21 GDPR Right to Object (Widerspruchs- und Sperrlistenmechanismus).
+    """Art. 21 GDPR & § 7 UWG Right to Object (Widerspruchs- und Sperrlistenmechanismus).
 
     Blocks analysis, scraping, and outreach generation for any domain that has objected
-    or been added to the compliance blocklist.
+    or been added to the permanent compliance blocklist.
     """
 
     def __init__(
@@ -143,6 +143,7 @@ class OptOutBlocklistManager:
     ) -> None:
         self._storage_path = Path(storage_path) if storage_path else None
         self._domains: set[str] = set()
+        self._objection_timestamps: dict[str, str] = {}
 
         env_domains = os.getenv("GDPR_OPT_OUT_DOMAINS", "")
         for d in env_domains.split(","):
@@ -164,6 +165,18 @@ class OptOutBlocklistManager:
                         norm = normalize_domain_key(str(item))
                         if norm:
                             self._domains.add(norm)
+                elif isinstance(data, dict):
+                    for item in data.get("blocked_domains", []):
+                        norm = normalize_domain_key(str(item))
+                        if norm:
+                            self._domains.add(norm)
+                    raw_ts = data.get("objection_timestamps", {})
+                    if isinstance(raw_ts, dict):
+                        for k, v in raw_ts.items():
+                            norm = normalize_domain_key(str(k))
+                            if norm:
+                                self._domains.add(norm)
+                                self._objection_timestamps[norm] = str(v)
             except Exception:
                 pass
 
@@ -172,24 +185,46 @@ class OptOutBlocklistManager:
         """Return sorted tuple of currently blocked/opted-out domains."""
         return tuple(sorted(self._domains))
 
-    def add_domain(self, url_or_domain: str) -> str:
-        """Add a domain to the Art. 21 GDPR opt-out blocklist and persist if configured."""
+    @property
+    def objection_records(self) -> dict[str, str]:
+        """Return mapping of permanently opted-out domains to their UTC objection timestamp."""
+        return dict(self._objection_timestamps)
+
+    def add_domain(self, url_or_domain: str, objected_at_utc: str | None = None) -> str:
+        """Add a domain to the permanent Art. 21 GDPR / § 7 UWG opt-out blocklist and persist."""
         norm = normalize_domain_key(url_or_domain)
         if not norm:
             raise ValueError("Cannot add an empty domain to the Art. 21 opt-out blocklist.")
         self._domains.add(norm)
+        self._objection_timestamps[norm] = objected_at_utc or datetime.now(UTC).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
         self._persist()
         return norm
+
+    def sync_domains(self, domains: set[str] | list[str] | tuple[str, ...]) -> None:
+        """Synchronize runtime opt-out domains into the manager and persist permanently."""
+        changed = False
+        now_str = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        for d in domains:
+            norm = normalize_domain_key(d)
+            if norm and norm not in self._domains:
+                self._domains.add(norm)
+                self._objection_timestamps.setdefault(norm, now_str)
+                changed = True
+        if changed:
+            self._persist()
 
     def remove_domain(self, url_or_domain: str) -> str:
         """Remove a domain from the opt-out blocklist."""
         norm = normalize_domain_key(url_or_domain)
         self._domains.discard(norm)
+        self._objection_timestamps.pop(norm, None)
         self._persist()
         return norm
 
     def is_opted_out(self, url_or_domain: str) -> tuple[bool, str]:
-        """Check whether `url_or_domain` (or its parent domain) is on the Art. 21 opt-out blocklist."""
+        """Check whether `url_or_domain` (or its parent domain) is on the Art. 21 / § 7 UWG opt-out blocklist."""
         host = normalize_domain_key(url_or_domain)
         if not host:
             return False, ""
@@ -197,7 +232,7 @@ class OptOutBlocklistManager:
             if host == blocked or host.endswith(f".{blocked}"):
                 return (
                     True,
-                    f"Domain '{host}' is blocked due to an Art. 21 GDPR opt-out / blocklist entry ('{blocked}').",
+                    f"Domain '{host}' is permanently blocked due to an Art. 21 GDPR / § 7 UWG opt-out blocklist entry ('{blocked}').",
                 )
         return False, ""
 
@@ -205,8 +240,16 @@ class OptOutBlocklistManager:
         if self._storage_path is not None:
             try:
                 self._storage_path.parent.mkdir(parents=True, exist_ok=True)
+                payload = {
+                    "blocked_domains": sorted(self._domains),
+                    "objection_timestamps": {
+                        k: self._objection_timestamps[k]
+                        for k in sorted(self._objection_timestamps)
+                        if k in self._domains
+                    },
+                }
                 self._storage_path.write_text(
-                    json.dumps(sorted(self._domains), indent=2),
+                    json.dumps(payload, indent=2),
                     encoding="utf-8",
                 )
             except Exception:
@@ -254,4 +297,44 @@ def get_art14_outreach_footer(company_name: str = "your organization") -> str:
     )
 
 
-DEFAULT_OPT_OUT_MANAGER = OptOutBlocklistManager()
+DEFAULT_OPT_OUT_STORAGE_PATH = Path(
+    os.getenv(
+        "GDPR_OPT_OUT_STORAGE_PATH",
+        str(Path(__file__).resolve().parents[2] / ".gdpr_opt_out_blocklist.json"),
+    )
+)
+
+DEFAULT_OPT_OUT_MANAGER = OptOutBlocklistManager(
+    storage_path=DEFAULT_OPT_OUT_STORAGE_PATH
+)
+
+# Misleading or unsubstantiated advertising claims prohibited under § 5 UWG (Irreführende geschäftliche Handlungen)
+DEFAULT_MISLEADING_ADVERTISING_PHRASES: tuple[str, ...] = (
+    "100% guaranteed",
+    "guaranteed roi",
+    "guaranteed revenue",
+    "zero risk",
+    "risk-free guarantee",
+    "certifiably the #1",
+    "proven to double",
+    "eliminates all downtime",
+    "100% bug-free",
+    "officially endorsed by",
+    "exclusive partnership with",
+)
+
+
+def detect_misleading_advertising_claims(
+    text: str,
+    prohibited_phrases: tuple[str, ...] = DEFAULT_MISLEADING_ADVERTISING_PHRASES,
+) -> list[str]:
+    """Detect misleading, deceptive, or unsubstantiated superlative advertising claims (§ 5 UWG)."""
+    if not text:
+        return []
+    lower_text = text.lower()
+    violations: list[str] = []
+    for phrase in prohibited_phrases:
+        cleaned = phrase.strip().lower()
+        if cleaned and cleaned in lower_text:
+            violations.append(phrase)
+    return violations
